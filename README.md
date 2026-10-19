@@ -2,6 +2,8 @@
 
 Eatsrealms is a native 2.5D (HD-2D) RPG and diorama engine inspired by Octopath Traveler. It pairs 3D multi-height terrain and procedural low-poly architecture with 2.5D normal-mapped pixel-art billboards, dynamic point lights, directional shadows, and cinematic tilt-shift post-processing.
 
+See it live: [Eatsrealms](https://maddestlabs.github.io/eatsrealms/)
+
 ## Tech Stack
 
 - Core Language: Modern C++20 (MSVC, Clang, GCC) with OpenMP acceleration for procedural generation
