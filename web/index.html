@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Eatsrealms (WebGPU HD-2D Diorama Engine)</title>
+    
+    <meta name="application-name" content="Eatsrealms">
+    <meta name="apple-mobile-web-app-title" content="Eatsrealms">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0d0f17">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Native 2.5D (HD-2D) RPG and diorama engine built in C++20 and WebGPU with procedural pixel art, multi-height terrain, and tilt-shift depth of field.">
+
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f172a'/%3E%3Cpolygon points='16,4 28,26 4,26' fill='%236366f1'/%3E%3Cpolygon points='16,11 23,24 9,24' fill='%2310b981'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            background-color: #0d0f17;
+            color: #e2e8f0;
+            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at 50% 35%, #181d2c 0%, #0d0f17 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        canvas#canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            outline: none;
+            cursor: grab;
+            touch-action: none;
+        }
+
+        canvas#canvas:active {
+            cursor: grabbing;
+        }
+
+        #app-loading-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at center, #161c2d 0%, #0a0c13 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999;
+            transition: opacity 0.5s ease-out;
+        }
+
+        #app-loading-screen.fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loader-card {
+            background: rgba(22, 28, 45, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(16px);
+            border-radius: 16px;
+            padding: 36px 48px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 90vw;
+            width: 480px;
+        }
+
+        .realm-title {
+            font-family: 'Cinzel', serif;
+            font-size: 2.2rem;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            color: #f8fafc;
+            text-shadow: 0 0 20px rgba(245, 158, 11, 0.35);
+            margin-bottom: 4px;
+        }
+
+        .realm-subtitle {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            letter-spacing: 0.22em;
+            color: #fbbf24;
+            text-transform: uppercase;
+            margin-bottom: 24px;
+        }
+
+        .progress-bar-track {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 999px;
+            overflow: hidden;
+            position: relative;
+            margin-bottom: 16px;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 40%;
+            background: linear-gradient(90deg, #f59e0b, #fbbf24, #60a5fa);
+            border-radius: 999px;
+            animation: pulse-bar 1.6s ease-in-out infinite alternate;
+        }
+
+        @keyframes pulse-bar {
+            0% { width: 25%; transform: translateX(0%); }
+            100% { width: 75%; transform: translateX(33%); }
+        }
+
+        .status-text {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.74rem;
+            letter-spacing: 0.08em;
+            color: #94a3b8;
+            text-align: center;
+        }
+
+        .status-text.error {
+            color: #f87171 !important;
+        }
+
+        .webgpu-badge {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            background: rgba(15, 23, 42, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            backdrop-filter: blur(10px);
+            border-radius: 999px;
+            padding: 6px 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            color: #e2e8f0;
+            z-index: 100;
+        }
+
+        .badge-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #10b981;
+            box-shadow: 0 0 8px #10b981;
+        }
+
+        .controls-hud {
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 8px 18px;
+            display: flex;
+            gap: 16px;
+            z-index: 100;
+            font-size: 0.72rem;
+            color: #cbd5e1;
+            pointer-events: none;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+        }
+
+        .hud-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .hud-key {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            color: #f8fafc;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+        <div id="app-loading-screen">
+            <div class="loader-card">
+                <div class="realm-title">EATSREALMS</div>
+                <div class="realm-subtitle">Native 2.5D HD-2D RPG &amp; Diorama Engine</div>
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill"></div>
+                </div>
+                <div class="status-text" id="status-text">INITIALIZING WEBGPU PIPELINE &amp; FOLEY DSP...</div>
+            </div>
+        </div>
+
+        <div class="webgpu-badge" id="gpu-badge">
+            <div class="badge-dot"></div>
+            <span>WebGPU Active</span>
+        </div>
+
+        <div class="controls-hud">
+            <div class="hud-item"><span class="hud-key">Click</span> Look &amp; Fly</div>
+            <div class="hud-item"><span class="hud-key">W A S D</span> Move</div>
+            <div class="hud-item"><span class="hud-key">Space / C</span> Ascend / Descend</div>
+            <div class="hud-item"><span class="hud-key">Shift</span> Sprint</div>
+            <div class="hud-item"><span class="hud-key">F</span> Auto-Focus</div>
+            <div class="hud-item"><span class="hud-key">R</span> Reset View</div>
+            <div class="hud-item"><span class="hud-key">TAB / ESC</span> Unlock Cursor</div>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        var canvasElem = document.getElementById('canvas');
+        if (canvasElem) {
+            canvasElem.addEventListener('click', function() {
+                canvasElem.focus();
+            });
+        }
+        const statusText = document.getElementById('status-text');
+        const badge = document.getElementById('gpu-badge');
+
+        window.hideAppLoadingScreen = function() {
+            var loader = document.getElementById('app-loading-screen');
+            if (loader && !loader.classList.contains('fade-out')) {
+                loader.classList.add('fade-out');
+                setTimeout(function() {
+                    if (loader.parentNode) {
+                        loader.parentNode.removeChild(loader);
+                    }
+                }, 500);
+            }
+        };
+
+        function unlockAudio() {
+            if (window.miniaudio) {
+                var devs = window.miniaudio.devices || window.miniaudio.device_instances || [];
+                for (var k in devs) {
+                    var dev = devs[k];
+                    if (!dev) continue;
+                    var ctx = dev.webaudio || dev.audioContext;
+                    if (ctx && typeof ctx.resume === 'function' && ctx.state === 'suspended') {
+                        ctx.resume().catch(function(e) {
+                            console.warn('[Audio] Failed to resume WebAudio context:', e);
+                        });
+                    }
+                }
+            }
+            if (window.audioContext && window.audioContext.state === 'suspended') {
+                window.audioContext.resume().catch(function() {});
+            }
+        }
+
+        ['click', 'pointerdown', 'keydown', 'touchstart'].forEach(function(evt) {
+            window.addEventListener(evt, unlockAudio, { passive: true, capture: true });
+        });
+
+        let webgpuDevicePromise = null;
+        if (navigator.gpu) {
+            webgpuDevicePromise = navigator.gpu.requestAdapter().then(function(adapter) {
+                if (!adapter) {
+                    throw new Error('No appropriate GPUAdapter found.');
+                }
+                return adapter.requestDevice();
+            }).catch(function(err) {
+                console.error('[WebGPU] Failed to acquire WebGPU device:', err);
+                return null;
+            });
+        } else {
+            badge.innerHTML = '<div class="badge-dot" style="background:#ef4444;box-shadow:0 0 8px #ef4444;"></div><span>WebGPU Unsupported</span>';
+            statusText.className = 'status-text error';
+            statusText.innerText = 'WebGPU is not supported in this browser. Please enable WebGPU in Chrome, Edge, or Firefox Nightly.';
+        }
+
+        var Module = {
+            preRun: [
+                function() {
+                    if (webgpuDevicePromise) {
+                        Module.addRunDependency('webgpu-device');
+                        webgpuDevicePromise.then(function(device) {
+                            if (device) {
+                                Module.preinitializedWebGPUDevice = device;
+                                console.log('[WebGPU] Preinitialized WebGPU GPUDevice ready:', device);
+                            }
+                            Module.removeRunDependency('webgpu-device');
+                        }).catch(function(err) {
+                            console.error('[WebGPU] Error resolving WebGPU device:', err);
+                            Module.removeRunDependency('webgpu-device');
+                        });
+                    }
+                }
+            ],
+            postRun: [
+                function() {
+                    unlockAudio();
+                    window.hideAppLoadingScreen();
+                }
+            ],
+            print: function(text) {
+                console.log('[Eatsrealms WASM]', text);
+            },
+            printErr: function(text) {
+                console.error('[Eatsrealms WASM Error]', text);
+            },
+            canvas: (function() {
+                var c = document.getElementById('canvas');
+                return c;
+            })(),
+            locateFile: function(path, prefix) {
+                return prefix + path;
+            },
+            setStatus: function(text) {
+                if (text && text.length > 0 && statusText) {
+                    statusText.innerText = text.toUpperCase();
+                }
+            },
+            totalDependencies: 0,
+            monitorRunDependencies: function(left) {
+                this.totalDependencies = Math.max(this.totalDependencies, left);
+                Module.setStatus(left ? 'LOADING REALM ASSETS... (' + (this.totalDependencies - left) + '/' + this.totalDependencies + ')' : 'ASSETS LOADED. INITIALIZING HD-2D DIORAMA...');
+            }
+        };
+
+        window.onerror = function(event) {
+            if (statusText) {
+                statusText.className = 'status-text error';
+                statusText.innerText = 'INITIALIZATION ERROR: ' + event;
+            }
+        };
+    </script>
+    {{{ SCRIPT }}}
+</body>
+</html>

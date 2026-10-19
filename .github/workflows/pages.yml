@@ -1,0 +1,73 @@
+name: Deploy Eatsrealms to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.73
+
+      - name: Verify Emscripten
+        run: |
+          emcc --version
+
+      - name: Configure CMake with Emscripten
+        run: |
+          emcmake cmake -B build-web -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build WebAssembly and WebGPU targets
+        run: |
+          cmake --build build-web --config Release
+
+      - name: Assemble GitHub Pages distribution
+        run: |
+          mkdir -p _site
+          cp build-web/index.html _site/
+          cp build-web/eatsrealms.html _site/
+          cp build-web/eatsrealms.js _site/
+          cp build-web/eatsrealms.wasm _site/
+          cp build-web/eatsrealms.data _site/
+          touch _site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
