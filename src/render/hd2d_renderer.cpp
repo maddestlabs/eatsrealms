@@ -244,7 +244,7 @@ fn fs_shadow_sprite(in : SpriteShadowOut) {
 // ============================================================================
 // WGSL SHADER 1: HD-2D LIT SCENE PASS (Sky + 3D World + 2.5D Sprite3D)
 // ============================================================================
-static const char* kSceneWgslSource = R"(
+static const char* kSceneWgslPart1 = R"(
 struct SceneUniforms {
     viewProj      : mat4x4<f32>,
     lightViewProj : mat4x4<f32>,
@@ -328,23 +328,43 @@ fn evaluateSunsetSky(rayDir : vec3<f32>) -> vec3<f32> {
     let sunD = normalize(u.sunDir.xyz);
     let elev = clamp(rayDir.y, 0.0, 1.0);
 
-    let horizonCol = vec3<f32>(0.80, 0.44, 0.36);
-    let midSkyCol  = vec3<f32>(0.32, 0.19, 0.32);
-    let zenithCol  = vec3<f32>(0.11, 0.08, 0.20);
+    let horizonCol = u.skyHorizon.rgb;
+    let zenithCol  = u.skyZenith.rgb;
+    let midSkyCol  = mix(horizonCol, zenithCol, 0.55);
 
-    var sky = mix(horizonCol, midSkyCol, smoothstep(0.0, 0.28, elev));
-    sky = mix(sky, zenithCol, smoothstep(0.24, 0.78, elev));
+    var sky = horizonCol;
+    if (rayDir.y >= 0.0) {
+        sky = mix(horizonCol, midSkyCol, smoothstep(0.0, 0.28, elev));
+        sky = mix(sky, zenithCol, smoothstep(0.24, 0.78, elev));
+    } else {
+        let downFactor = clamp(-rayDir.y * 3.5, 0.0, 1.0);
+        let deepHaze = mix(horizonCol * 0.75, vec3<f32>(0.22, 0.28, 0.25), 0.50);
+        sky = mix(horizonCol, deepHaze, downFactor);
+    }
 
     let sunAlignment = max(dot(rayDir, sunD), 0.0);
     sky += u.sunColor.rgb * (0.22 * pow(sunAlignment, 3.0) + 0.32 * pow(sunAlignment, 16.0));
+
+    // Sparkling stars in the night sky
+    if (rayDir.y > 0.04 && u.skyZenith.r < 0.14) {
+        let starGrid = rayDir.xz / (rayDir.y + 0.18) * 88.0;
+        let starH = hash2D(floor(starGrid));
+        let nightFactor = clamp((0.14 - u.skyZenith.r) / 0.11, 0.0, 1.0);
+        if (starH > 0.982) {
+            let starFrac = fract(starGrid) - vec2<f32>(0.5, 0.5);
+            let starDist = length(starFrac);
+            let twinkle = sin(u.camPos.w * 3.2 + starH * 65.0) * 0.25 + 0.75;
+            sky += vec3<f32>(0.92, 0.96, 1.0) * smoothstep(0.18, 0.0, starDist) * nightFactor * twinkle;
+        }
+    }
 
     if (rayDir.y > 0.01) {
         let cloudPlaneUV = rayDir.xz / (rayDir.y + 0.20) * 1.55 + vec2<f32>(u.camPos.w * 0.012, -0.8);
         let c1 = fbmClouds(cloudPlaneUV);
         let c2 = fbmClouds(cloudPlaneUV * 2.1 - vec2<f32>(0.7, 0.5));
         let cloudMask = smoothstep(0.42, 0.74, c1) * (1.0 - smoothstep(0.01, 0.0, rayDir.y));
-        let cloudShadow = vec3<f32>(0.22, 0.13, 0.22);
-        let cloudRim    = vec3<f32>(0.96, 0.58, 0.42);
+        let cloudShadow = mix(vec3<f32>(0.02, 0.02, 0.04), vec3<f32>(0.22, 0.13, 0.22), clamp(u.skyZenith.r * 5.0, 0.0, 1.0));
+        let cloudRim    = mix(vec3<f32>(0.25, 0.35, 0.55), u.skyHorizon.rgb * 1.25, clamp(u.sunDir.y * 3.0, 0.0, 1.0));
         let cloudLit    = mix(cloudShadow, cloudRim, smoothstep(0.32, 0.68, c2) * 0.72 + 0.28 * sunAlignment);
         sky = mix(sky, cloudLit, cloudMask * 0.68);
     }
@@ -424,7 +444,9 @@ fn evaluatePointLights(worldPos : vec3<f32>, N : vec3<f32>, wrapAmount : f32) ->
     }
     return total;
 }
+)";
 
+static const char* kSceneWgslPart2 = R"(
 // ----------------------------------------------------------------------------
 // 3D World Terrain & Architectural Props Vertex/Fragment Shaders
 // ----------------------------------------------------------------------------
@@ -437,6 +459,7 @@ struct WorldVSOut {
     @location(4) aoAndRough    : vec2<f32>,
     @location(5) @interpolate(flat) texLayer : u32,
     @location(6) @interpolate(flat) flags    : u32,
+    @location(7) shoreFactor   : f32,
 };
 
 @vertex
@@ -451,21 +474,205 @@ fn vs_world(@builtin(vertex_index) vertexIndex : u32) -> WorldVSOut {
     out.aoAndRough = vec2<f32>(v.posAndAo.w, v.normAndRough.w);
     out.texLayer   = bitcast<u32>(v.tangAndLayer.w);
     out.flags      = bitcast<u32>(v.uvAndFlags.z);
+    out.shoreFactor = v.uvAndFlags.w;
     return out;
+}
+
+fn evaluateVolumetricSunbeam(camPos : vec3<f32>, worldPos : vec3<f32>) -> vec3<f32> {
+    let sunVis = clamp(u.sunDir.y * 2.2, 0.0, 1.0);
+    if (sunVis < 0.005) {
+        return vec3<f32>(0.0);
+    }
+
+    let V = worldPos - camPos;
+    let dist = length(V);
+    let rayDir = V / max(dist, 0.001);
+    let L = normalize(u.sunDir.xyz);
+
+    // Mie Forward Scattering Phase Function (Henyey-Greenstein approximation, g = 0.68)
+    // Strong forward peak creates brilliant glowing light shafts when looking toward the sun angle
+    let cosTheta = dot(rayDir, L);
+    let g = 0.68;
+    let g2 = g * g;
+    let miePhase = (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * cosTheta, 0.01), 1.5) * 0.079577; // 1 / (4 * pi)
+
+    // Directional ray basis perpendicular to sun vector L for parallel crepuscular ribbons
+    var upRef = vec3<f32>(0.0, 1.0, 0.0);
+    if (abs(L.y) > 0.92) {
+        upRef = vec3<f32>(1.0, 0.0, 0.0);
+    }
+    let beamU = normalize(cross(L, upRef));
+    let beamV = cross(L, beamU);
+
+    // Raymarch through the atmosphere between camera and surface
+    let maxMarchDist = min(dist, 72.0);
+    let startDist = 3.5;
+    if (maxMarchDist <= startDist) {
+        return vec3<f32>(0.0);
+    }
+
+    let marchSpan = maxMarchDist - startDist;
+    let stepLen = marchSpan / 10.0;
+    var accumLight = 0.0;
+
+    for (var s = 0; s < 10; s = s + 1) {
+        let tSample = startDist + (f32(s) + 0.5) * stepLen;
+        let p = camPos + rayDir * tSample;
+
+        // Sample real shadow map at position p in 3D air!
+        let shadow = sampleSunShadow(p, vec3<f32>(0.0));
+
+        if (shadow > 0.02) {
+            // Coordinate in sunbeam cross-section plane
+            let uCoord = dot(p, beamU);
+            let vCoord = dot(p, beamV);
+
+            // Parallel crepuscular ray striations streaming through the pine canopy
+            let shaft1 = sin(uCoord * 0.92 + vCoord * 0.38) * 0.45 + 0.55;
+            let shaft2 = cos(uCoord * 1.85 - vCoord * 0.68) * 0.35 + 0.65;
+            let shaft3 = sin(uCoord * 3.45 + vCoord * 1.15) * 0.25 + 0.75;
+            let canopyShafts = shaft1 * shaft2 * shaft3;
+
+            // Directional beam corridor aligned with sun vector L passing through the forest clearing
+            let beamAnchor = vec3<f32>(1.2, 8.0, 11.5);
+            let toAnchor = p - beamAnchor;
+            let perpDist = length(toAnchor - L * dot(toAnchor, L));
+            let beamCorridor = smoothstep(12.0, 2.5, perpDist);
+
+            // Subtle animated dust motes caught in the sunbeam
+            let motes = valueNoise2D(vec2<f32>(uCoord, vCoord) * 0.75 + vec2<f32>(u.camPos.w * 0.04, p.y * 0.15)) * 0.30 + 0.70;
+
+            // Height-based atmospheric haze density (more fog near forest floor)
+            let heightDensity = exp(-max(p.y - 1.5, 0.0) * 0.085);
+
+            accumLight += shadow * canopyShafts * beamCorridor * motes * heightDensity * stepLen;
+        }
+    }
+
+    let sunbeamColor = u.sunColor.rgb * 1.75 + vec3<f32>(0.16, 0.11, 0.03);
+    return sunbeamColor * (accumLight * miePhase * 1.85) * sunVis;
+}
+)";
+
+static const char* kSceneWgslPart3 = R"(
+fn evaluateOceanWaveNormal(worldXZ : vec2<f32>, t : f32) -> vec3<f32> {
+    let d1 = vec2<f32>(0.707, 0.707);
+    let d2 = vec2<f32>(-0.42, 0.91);
+    let d3 = vec2<f32>(0.92, -0.39);
+    let d4 = vec2<f32>(-0.60, -0.80);
+
+    let p1 = dot(worldXZ, d1) * 0.55 - t * 1.65;
+    let p2 = dot(worldXZ, d2) * 1.10 - t * 2.10;
+    let p3 = dot(worldXZ, d3) * 2.25 - t * 3.05;
+    let p4 = dot(worldXZ, d4) * 4.50 - t * 4.10;
+
+    var slope = vec2<f32>(0.0);
+    slope += d1 * (cos(p1) * 0.066);
+    slope += d2 * (cos(p2) * 0.071);
+    slope += d3 * (cos(p3) * 0.078);
+    slope += d4 * (cos(p4) * 0.081);
+
+    return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
 }
 
 @fragment
 fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
-    var uv = in.uv;
+    let layer = i32(in.texLayer);
+    let fw = fwidth(in.uv);
+
+    // ------------------------------------------------------------------------
+    // High-End HD-2D Coastal Ocean & Water Surface Shading
+    // ------------------------------------------------------------------------
     if ((in.flags & 1u) != 0u) {
-        // Animated water surface ripple & scroll
         let t = u.camPos.w;
-        uv += vec2<f32>(t * 0.14 + sin(in.worldPos.z * 1.4 + t * 2.2) * 0.05, cos(in.worldPos.x * 1.4 + t * 1.9) * 0.05);
+        let baseWaveN = evaluateOceanWaveNormal(in.worldPos.xz, t);
+
+        // Sample continuous micro-wave normals at dual drifting world scales
+        let wuv1 = in.worldPos.xz * 0.075 + vec2<f32>(t * 0.025, t * 0.015);
+        let wuv2 = in.worldPos.xz * 0.165 - vec2<f32>(t * 0.020, t * 0.032);
+        let nMap1 = textureSampleLevel(normalAtlas, atlasSampler, wuv1, layer, 0.0).xyz * 2.0 - vec3<f32>(1.0);
+        let nMap2 = textureSampleLevel(normalAtlas, atlasSampler, wuv2, layer, 0.0).xyz * 2.0 - vec3<f32>(1.0);
+        let microNormal = (nMap1 + nMap2) * 0.28;
+        let N = normalize(baseWaveN + vec3<f32>(microNormal.x, 0.0, microNormal.y));
+
+        let V = normalize(u.camPos.xyz - in.worldPos);
+        let L = normalize(u.sunDir.xyz);
+        let H = normalize(V + L);
+        let reflDir = reflect(-V, N);
+
+        let shadowVis = sampleSunShadow(in.worldPos, vec3<f32>(0.0, 1.0, 0.0));
+
+        // 1. Specular Highlights & Signature Octopath Diamond Sparkles
+        let nDotH = max(dot(N, H), 0.0);
+        let sunLobe = pow(nDotH, 128.0) * 2.4 * shadowVis;
+
+        // Micro-facet diamond glints dancing across wave peaks facing the sun
+        let glintGrid = in.worldPos.xz * 8.5 + N.xz * 3.8 + vec2<f32>(t * 1.15, -t * 0.75);
+        let glintCell = floor(glintGrid);
+        let glintH = hash2D(glintCell);
+        let glintFrac = fract(glintGrid) - vec2<f32>(0.5, 0.5);
+        let glintDist = length(glintFrac);
+        let glintTwinkle = sin(t * 6.5 + glintH * 77.0) * 0.5 + 0.5;
+        let isDiamond = smoothstep(0.22, 0.0, glintDist) * step(0.62, glintH) * glintTwinkle;
+        let sunSparkle = pow(nDotH, 44.0) * isDiamond * 10.5 * shadowVis;
+
+        // Sun path reflection corridor across the water
+        let sunCorridor = pow(max(dot(reflDir, L), 0.0), 32.0) * 0.95 * shadowVis;
+        let specWater = u.sunColor.rgb * (sunLobe + sunSparkle + sunCorridor);
+
+        // 2. Coastal Depth Color Gradient (Deep Navy -> Mid Azure -> Tropical Turquoise)
+        let deepOcean    = vec3<f32>(0.018, 0.092, 0.175);
+        let midAzure     = vec3<f32>(0.042, 0.235, 0.315);
+        let tropicalTeal = vec3<f32>(0.125, 0.485, 0.535);
+
+        var waterCol = mix(deepOcean, midAzure, smoothstep(0.0, 0.45, in.shoreFactor));
+        waterCol = mix(waterCol, tropicalTeal, smoothstep(0.40, 0.85, in.shoreFactor));
+
+        // 3. Subsurface Animated Caustic Web in Shallows
+        let c1 = valueNoise2D(in.worldPos.xz * 1.6 + vec2<f32>(t * 0.16, t * 0.09));
+        let c2 = valueNoise2D(in.worldPos.xz * 1.6 + vec2<f32>(-t * 0.13, t * 0.20) + vec2<f32>(4.7, 2.3));
+        let caustic = pow(min(c1, c2) * 2.3, 3.0);
+        waterCol += vec3<f32>(0.14, 0.36, 0.40) * caustic * smoothstep(0.12, 0.70, in.shoreFactor) * (0.6 + 0.4 * shadowVis);
+
+        // 4. Surging Shoreline Surf & Breaking Foam around Rocks & Sea Stacks
+        let surfCycle = t * 2.7 - in.worldPos.x * 0.35 + sin(in.worldPos.z * 0.85) * 1.5;
+        let surfPulse = sin(surfCycle) * 0.5 + 0.5;
+        let foamEdge = smoothstep(0.68 - surfPulse * 0.22, 0.98, in.shoreFactor);
+        let foamNoise = valueNoise2D(in.worldPos.xz * 5.2 + vec2<f32>(t * 0.26, cos(t * 1.2) * 0.2));
+        let foamLace = smoothstep(0.35, 0.68, foamNoise + in.shoreFactor * 0.5);
+        let contactBand = smoothstep(0.72, 0.95, in.shoreFactor);
+        let surfFoam = clamp((foamEdge * 0.85 + contactBand * 1.3) * foamLace, 0.0, 1.0);
+
+        let foamColor = vec3<f32>(0.92, 0.97, 1.00);
+        waterCol = mix(waterCol, foamColor, surfFoam);
+
+        // 5. Sky Fresnel Reflection
+        let skyRefl = evaluateSunsetSky(vec3<f32>(reflDir.x, max(reflDir.y, 0.06), reflDir.z));
+        let fresnel = 0.04 + 0.96 * pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 4.8);
+
+        let dynamicLights = evaluatePointLights(in.worldPos, N, 0.40);
+        var waterLit = mix(waterCol, skyRefl * 0.65, fresnel * 0.48) + specWater * (1.0 - surfFoam * 0.4) + dynamicLights;
+
+        let sunbeam = evaluateVolumetricSunbeam(u.camPos.xyz, in.worldPos);
+        waterLit += sunbeam;
+
+        let viewDist = length(in.worldPos - u.camPos.xyz);
+        let heightFalloff = u.camBasisZ.w;
+        var heightFog = 0.0;
+        if (heightFalloff > 0.0001) {
+            let yDelta = max(in.worldPos.y - 1.8, 0.0);
+            heightFog = exp(-yDelta * heightFalloff) * 0.22;
+        }
+        let distFog = 1.0 - exp(-max(viewDist - 55.0, 0.0) * (u.sunDir.w * 0.35));
+        let fogAmount = clamp(distFog * 0.55 + heightFog, 0.0, 0.55);
+        let fogColor  = mix(u.skyHorizon.rgb, u.skyZenith.rgb, 0.45);
+        waterLit = mix(waterLit, fogColor, fogAmount);
+
+        return vec4<f32>(waterLit, viewDist);
     }
 
-    let fw = fwidth(uv);
+    var uv = in.uv;
     let crispUV = computeCrispUV(uv, fw);
-    let layer = i32(in.texLayer);
 
     let albSample  = textureSampleLevel(albedoAtlas, atlasSampler, crispUV, layer, 0.0);
     let normSample = textureSampleLevel(normalAtlas, atlasSampler, crispUV, layer, 0.0);
@@ -503,17 +710,19 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
               + u.sunColor.rgb * spec * 0.35
               + albedo * (emissive * 2.4);
 
-    if ((in.flags & 1u) != 0u) {
-        // Reflective sky sheen on river & millpond water
-        let reflDir = reflect(-V, N);
-        let skyRefl = evaluateSunsetSky(vec3<f32>(reflDir.x, abs(reflDir.y), reflDir.z));
-        let fresnel = 0.18 + 0.55 * pow(1.0 - max(dot(N, V), 0.0), 3.0);
-        color = mix(color, skyRefl + u.sunColor.rgb * spec * 1.2, fresnel * 0.55);
-    }
+    let sunbeam = evaluateVolumetricSunbeam(u.camPos.xyz, in.worldPos);
+    color += sunbeam;
 
     let viewDist = length(in.worldPos - u.camPos.xyz);
-    let fogAmount = clamp(1.0 - exp(-max(viewDist - 36.0, 0.0) * u.sunDir.w), 0.0, 0.55);
-    let fogColor  = evaluateSunsetSky(-V);
+    let heightFalloff = u.camBasisZ.w;
+    var heightFog = 0.0;
+    if (heightFalloff > 0.0001) {
+        let yDelta = max(in.worldPos.y - 1.8, 0.0);
+        heightFog = exp(-yDelta * heightFalloff) * 0.22;
+    }
+    let distFog = 1.0 - exp(-max(viewDist - 55.0, 0.0) * (u.sunDir.w * 0.35));
+    let fogAmount = clamp(distFog * 0.55 + heightFog, 0.0, 0.55);
+    let fogColor  = mix(u.skyHorizon.rgb, u.skyZenith.rgb, 0.45);
     color = mix(color, fogColor, fogAmount);
 
     return vec4<f32>(color, viewDist);
@@ -630,14 +839,28 @@ fn fs_sprite(in : SpriteVSOut) -> @location(0) vec4<f32> {
               + u.sunColor.rgb * edgeRim
               + albedo * (emissive * 2.8);
 
+    let sunbeam = evaluateVolumetricSunbeam(u.camPos.xyz, in.worldPos);
+    color += sunbeam;
+
     let viewDist = length(in.worldPos - u.camPos.xyz);
-    let fogAmount = clamp(1.0 - exp(-max(viewDist - 36.0, 0.0) * u.sunDir.w), 0.0, 0.55);
-    let fogColor  = evaluateSunsetSky(-V);
+    let heightFalloff = u.camBasisZ.w;
+    var heightFog = 0.0;
+    if (heightFalloff > 0.0001) {
+        let yDelta = max(in.worldPos.y - 1.8, 0.0);
+        heightFog = exp(-yDelta * heightFalloff) * 0.22;
+    }
+    let distFog = 1.0 - exp(-max(viewDist - 55.0, 0.0) * (u.sunDir.w * 0.35));
+    let fogAmount = clamp(distFog * 0.55 + heightFog, 0.0, 0.55);
+    let fogColor  = mix(u.skyHorizon.rgb, u.skyZenith.rgb, 0.45);
     color = mix(color, fogColor, fogAmount);
 
     return vec4<f32>(color, viewDist);
 }
 )";
+
+static std::string getSceneWgslSource() {
+    return std::string(kSceneWgslPart1) + kSceneWgslPart2 + kSceneWgslPart3;
+}
 
 // ============================================================================
 // WGSL SHADER 2: TILT-SHIFT BOKEH DEPTH OF FIELD + HDR BLOOM + ACES FILMIC
@@ -687,16 +910,14 @@ fn computeCoC(dist : f32, uv : vec2<f32>) -> f32 {
     let depthDelta = dist - focusDist;
     var depthCoC = 0.0;
     if (depthDelta < 0.0) {
+        // Foreground: smooth creamy bokeh as objects approach the camera lens
         depthCoC = clamp((-depthDelta - focusRange * 0.35) / (focusRange * 0.95), 0.0, 1.0);
     } else {
-        depthCoC = clamp((depthDelta - focusRange * 0.85) / (focusRange * 2.4), 0.0, 0.65);
+        // Background: gentle falloff to keep distant vista atmospheric while nearby content stays crisp
+        depthCoC = clamp((depthDelta - focusRange * 0.55) / (focusRange * 2.2), 0.0, 0.88);
     }
 
-    // Signature Octopath / Tilt-Shift miniature lens band
-    let bottomTilt = smoothstep(0.75, 0.99, uv.y) * 0.85;
-    let topTilt    = smoothstep(0.16, 0.0, uv.y) * 0.32;
-
-    return clamp(max(depthCoC, max(bottomTilt, topTilt)), 0.0, 1.0);
+    return clamp(depthCoC, 0.0, 1.0);
 }
 
 fn acesFilmic(x : vec3<f32>) -> vec3<f32> {
@@ -706,6 +927,68 @@ fn acesFilmic(x : vec3<f32>) -> vec3<f32> {
     let d = 0.59;
     let e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+struct BokehOrb {
+    pos     : vec3<f32>,
+    radius  : f32,
+    color   : vec3<f32>,
+    opacity : f32,
+    rim     : f32,
+};
+
+// Analytical 6-Blade Hexagonal Aperture Bokeh Disc with Soft Optical Blur and Balanced Opacity
+fn evalPolygonalBokehDisc(
+    pixelUV   : vec2<f32>,
+    centerUV  : vec2<f32>,
+    radiusUV  : f32,
+    nBlades   : f32,
+    rotation  : f32,
+    aspect    : f32,
+    color     : vec3<f32>,
+    intensity : f32,
+    rimBoost  : f32
+) -> vec3<f32> {
+    let delta = (pixelUV - centerUV) * vec2<f32>(aspect, 1.0);
+    let dist  = length(delta);
+    if (dist > radiusUV * 1.35) {
+        return vec3<f32>(0.0);
+    }
+
+    let pi = 3.14159265359;
+    let bladeAngle = (2.0 * pi) / nBlades;
+    let halfBlade  = bladeAngle * 0.5;
+    let cosHalfBlade = cos(halfBlade);
+
+    let theta = atan2(delta.y, delta.x) + rotation;
+    let normAngle = theta / bladeAngle;
+    let relAngle  = (normAngle - floor(normAngle)) * bladeAngle;
+    let deltaAngle = abs(relAngle - halfBlade);
+
+    // Exact regular N-gon radial boundary at this angle
+    let polyRadius = radiusUV * (cosHalfBlade / max(cos(deltaAngle), 0.001));
+    let normDist   = dist / max(polyRadius, 0.0001);
+
+    if (normDist > 1.15) {
+        return vec3<f32>(0.0);
+    }
+
+    // Soft, blurry photographic out-of-focus boundary (creamy lens defocus matching Octopath)
+    let edgeCutoff = smoothstep(1.12, 0.84, normDist);
+
+    // Translucent interior fill (tuned to 0.50 opacity)
+    let interiorFill = 0.50;
+
+    // Soft, broad optical rim glow (smooth low-frequency gaussian swell)
+    let rimDist = normDist - 0.92;
+    let rimGlow = exp(-rimDist * rimDist * 28.0) * rimBoost;
+
+    // Delicate optical chromatic dispersion along the softened hexagonal rim
+    let caR = exp(-pow(normDist - 0.96, 2.0) * 32.0) * rimBoost * 0.22;
+    let caB = exp(-pow(normDist - 0.88, 2.0) * 32.0) * rimBoost * 0.22;
+
+    let profile = (interiorFill + rimGlow) * edgeCutoff * intensity;
+    return color * profile + vec3<f32>(caR, 0.0, caB) * (edgeCutoff * intensity);
 }
 
 @fragment
@@ -720,41 +1003,159 @@ fn fs_post(in : PostVSOut) -> @location(0) vec4<f32> {
 
     var accumColor  = centerSample.rgb;
     var totalWeight = 1.0;
+    var bokehSplats = vec3<f32>(0.0);
     var bloomAccum  = vec3<f32>(0.0);
 
-    // 24-Tap Golden-Angle Spiral Bokeh Disk Blur + Soft HDR Lantern/Window Bloom
+    // 38-Tap Hexagonal Aperture Bokeh Kernel (6-Blade Iris matching Octopath / UE4 lens)
     let goldenAngle = 2.39996323;
-    for (var i = 1; i <= 24; i = i + 1) {
+    let nBlades = 6.0;
+    let bladeAngle = 6.2831853 / nBlades; // pi / 3 = 1.0471975
+    let halfBlade = bladeAngle * 0.5;
+    let cosHalfBlade = cos(halfBlade); // cos(30 deg) = 0.866025
+    let apertureRot = 0.26; // Aesthetic tilt angle of the 6-blade iris
+
+    for (var i = 1; i <= 38; i = i + 1) {
         let fi = f32(i);
-        let spiralR = sqrt(fi / 24.0);
+        let spiralR = sqrt(fi / 38.0);
         let theta   = fi * goldenAngle;
         let dir     = vec2<f32>(cos(theta), sin(theta));
 
+        // Map circular spiral domain into a flat-faceted 6-sided regular hexagonal iris
+        let normAngle = (theta + apertureRot) / bladeAngle;
+        let relAngle = (normAngle - floor(normAngle)) * bladeAngle;
+        let deltaAngle = abs(relAngle - halfBlade);
+        let hexagonScale = cosHalfBlade / max(cos(deltaAngle), 0.50);
+
         // Sample wide bloom halo even in sharp focus zones
-        let bloomUV  = clamp(in.uv + dir * spiralR * 12.0 * texelSize, vec2<f32>(0.001), vec2<f32>(0.999));
+        let bloomUV  = clamp(in.uv + dir * spiralR * 14.0 * texelSize, vec2<f32>(0.001), vec2<f32>(0.999));
         let bloomTap = textureSampleLevel(sceneTex, sceneSampler, bloomUV, 0.0).rgb;
         let bloomLuma = dot(bloomTap, vec3<f32>(0.299, 0.587, 0.114));
         if (bloomLuma > 1.05) {
             bloomAccum += (bloomTap - vec3<f32>(1.0)) * 0.045;
         }
 
-        if (blurRadius > 0.35) {
-            let r = spiralR * blurRadius;
+        if (blurRadius > 0.40) {
+            let r = spiralR * blurRadius * hexagonScale;
             let sampleUV = clamp(in.uv + dir * r * texelSize, vec2<f32>(0.001), vec2<f32>(0.999));
             let tap = textureSampleLevel(sceneTex, sceneSampler, sampleUV, 0.0);
             let tapCoC = computeCoC(tap.a, sampleUV);
 
-            let weight = select(tapCoC, 1.0, tap.a <= centerDist + 3.5);
+            let weight = select(tapCoC, 1.0, tap.a <= centerDist + 2.5);
             let luma = dot(tap.rgb, vec3<f32>(0.299, 0.587, 0.114));
-            let bokehBoost = 1.0 + clamp(luma - 0.80, 0.0, 3.0) * 0.85;
-            let w = max(weight, 0.15) * bokehBoost;
 
-            accumColor += tap.rgb * w;
-            totalWeight += w;
+            let facetDist = spiralR * hexagonScale;
+            let rimBoost = select(1.0, 1.8, facetDist > 0.70);
+
+            // True optical chromatic dispersion on each individual hexagonal bokeh shape
+            let caDist = length(in.uv - vec2<f32>(0.5, 0.5));
+            let caOffset = dir * (r * 0.038 * caDist) * texelSize;
+            let rSample = textureSampleLevel(sceneTex, sceneSampler, clamp(sampleUV + caOffset, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0).r;
+            let bSample = textureSampleLevel(sceneTex, sceneSampler, clamp(sampleUV - caOffset, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0).b;
+            let colTap = vec3<f32>(rSample, tap.g, bSample);
+
+            let baseW = max(weight, 0.10);
+            accumColor += colTap * baseW;
+            totalWeight += baseW;
+
+            // Additive specular splats for highlights: water ripples, lanterns, sun reflections
+            if (luma > 0.55 && blurRadius > 1.0) {
+                let specSplat = pow(luma - 0.55, 1.8) * 3.5 * rimBoost;
+                bokehSplats += colTap * specSplat;
+            }
         }
     }
 
-    var hdrColor = ((accumColor / totalWeight) + bloomAccum) * u.sunColor.w;
+    var hdrColor = ((accumColor / totalWeight) + (bokehSplats / 38.0) * 1.5 + bloomAccum) * u.sunColor.w;
+
+    // Volumetric God-Ray Light Shafts streaming from the sunburst / upper canopy
+    // Dynamically positioned relative to camera focus center and sun angle for any scene or open-world location
+    let focusDist = max(u.skyZenith.w, 15.0);
+    let focusCenter = u.camPos.xyz + u.camBasisZ.xyz * focusDist;
+    let sunWorldPos = focusCenter + u.camBasisX.xyz * (focusDist * 0.14) + u.camBasisY.xyz * (focusDist * 0.24) + u.camBasisZ.xyz * (focusDist * 0.32);
+    let sunClip = u.viewProj * vec4<f32>(sunWorldPos, 1.0);
+    let aspect = u.params.y / max(u.params.z, 1.0);
+
+    if (sunClip.w > 0.0) {
+        let sunScreenUV = vec2<f32>(sunClip.x / sunClip.w * 0.5 + 0.5, -sunClip.y / sunClip.w * 0.5 + 0.5);
+        let rayDelta = (sunScreenUV - in.uv) / 16.0;
+        var rayAccum = 0.0;
+        var rayWeight = 1.0;
+        let rayDecay = 0.88;
+
+        for (var step = 1; step <= 16; step = step + 1) {
+            let sampleUV = clamp(in.uv + rayDelta * f32(step), vec2<f32>(0.001), vec2<f32>(0.999));
+            let sSample = textureSampleLevel(sceneTex, sceneSampler, sampleUV, 0.0);
+            let sLuma = dot(sSample.rgb, vec3<f32>(0.299, 0.587, 0.114));
+            let distFromSun = length(sampleUV - sunScreenUV);
+
+            let sunFlare = smoothstep(0.065, 0.0, distFromSun) * 1.8;
+            let brightTap = max(sLuma - 0.85, 0.0) * 0.75 + sunFlare;
+
+            rayAccum += brightTap * rayWeight;
+            rayWeight *= rayDecay;
+        }
+
+        let sunVis = clamp(u.sunDir.y * 2.2, 0.0, 1.0);
+        if (sunVis > 0.005) {
+            let godRayColor = u.sunColor.rgb * 1.25;
+            hdrColor += godRayColor * (rayAccum * 0.022 * sunVis);
+
+            // Radiant Hexagonal Sunburst breakthrough core (faceted 6-blade aperture flare matching Octopath)
+            let sunHexCore = evalPolygonalBokehDisc(in.uv, sunScreenUV, 0.040, 6.0, 0.26, aspect, vec3<f32>(3.2, 2.8, 2.1), 0.85, 1.0);
+            let sunHexOuter = evalPolygonalBokehDisc(in.uv, sunScreenUV, 0.082, 6.0, 0.26, aspect, vec3<f32>(1.25, 0.98, 0.58), 0.32, 0.65);
+            let sunburstHDR = (sunHexCore + sunHexOuter) * sunVis;
+            hdrColor += sunburstHDR;
+        }
+    }
+
+    // Floating Cinematic Hexagonal Bokeh Orbs & Atmospheric Motes (matching Octopath diorama)
+    // Distributed in view-relative camera space around the scene focal center
+    let orbOffsets = array<vec3<f32>, 8>(
+        vec3<f32>(-1.1, -0.3, -2.1),
+        vec3<f32>( 0.6,  2.0, -1.3),
+        vec3<f32>( 1.8,  4.0,  3.0),
+        vec3<f32>(-6.3,  4.7,  6.0),
+        vec3<f32>(-3.7,  1.8,  0.7),
+        vec3<f32>( 6.0,  2.4,  1.0),
+        vec3<f32>(-1.7, -2.0, -9.3),
+        vec3<f32>( 3.3, -2.2, -10.3)
+    );
+    let orbRadii = array<f32, 8>(0.038, 0.032, 0.026, 0.026, 0.024, 0.024, 0.042, 0.038);
+    let orbColors = array<vec3<f32>, 8>(
+        vec3<f32>(1.05, 1.08, 1.15),
+        vec3<f32>(1.18, 1.05, 0.75),
+        vec3<f32>(1.14, 1.02, 0.72),
+        vec3<f32>(0.92, 1.02, 1.15),
+        vec3<f32>(0.98, 1.05, 1.10),
+        vec3<f32>(1.10, 1.00, 0.75),
+        vec3<f32>(0.95, 1.00, 0.92),
+        vec3<f32>(1.08, 1.00, 0.85)
+    );
+    let orbOpacities = array<f32, 8>(0.38, 0.32, 0.26, 0.26, 0.22, 0.22, 0.32, 0.30);
+    let orbRims = array<f32, 8>(0.50, 0.45, 0.40, 0.40, 0.35, 0.35, 0.45, 0.40);
+
+    for (var k = 0; k < 8; k = k + 1) {
+        let drift = vec3<f32>(
+            sin(u.camPos.w * 0.6 + f32(k) * 1.5) * 0.25,
+            cos(u.camPos.w * 0.5 + f32(k) * 1.2) * 0.20,
+            sin(u.camPos.w * 0.4 + f32(k) * 0.8) * 0.25
+        );
+        let orbPos = focusCenter +
+            u.camBasisX.xyz * orbOffsets[k].x +
+            u.camBasisY.xyz * orbOffsets[k].y +
+            u.camBasisZ.xyz * orbOffsets[k].z + drift;
+        let orbClip = u.viewProj * vec4<f32>(orbPos, 1.0);
+        if (orbClip.w > 0.1) {
+            let orbUV = vec2<f32>(orbClip.x / orbClip.w * 0.5 + 0.5, -orbClip.y / orbClip.w * 0.5 + 0.5);
+            let orbDist = length(orbPos - u.camPos.xyz);
+            // Depth test against scene geometry (softly fade if embedded or behind geometry)
+            if (orbDist < centerDist + 1.2) {
+                let occFade = clamp((centerDist - orbDist + 1.2) / 1.5, 0.0, 1.0);
+                let disc = evalPolygonalBokehDisc(in.uv, orbUV, orbRadii[k], 6.0, 0.26, aspect, orbColors[k], orbOpacities[k] * occFade, orbRims[k]);
+                hdrColor += disc;
+            }
+        }
+    }
 
     // Characteristic HD-2D optical vignette
     let centeredUV = in.uv - vec2<f32>(0.5, 0.5);
@@ -791,7 +1192,10 @@ WGPUShaderModule createShaderModule(WGPUDevice device, const char* wgslSource) {
 
 void fillSceneUniforms(const RealmWorld& world, uint32_t width, uint32_t height, float timeSec, SceneUniforms& outU, bool showReticle = false) {
     const auto& cam = world.camera();
-    const auto& atm = world.atmosphere();
+    AtmosphereConfig atm = world.atmosphere();
+    if (world.useDayNightCycle()) {
+        atm = AtmosphereConfig::evaluateDayNight(world.timeOfDay());
+    }
 
     float aspect = static_cast<float>(width) / static_cast<float>(std::max(1u, height));
     float fovRad = cam.fovDegrees * (3.1415926535f / 180.0f);
@@ -804,7 +1208,12 @@ void fillSceneUniforms(const RealmWorld& world, uint32_t width, uint32_t height,
     float sLen = std::sqrt(sunDir.x * sunDir.x + sunDir.y * sunDir.y + sunDir.z * sunDir.z);
     if (sLen > 1e-6f) { sunDir.x /= sLen; sunDir.y /= sLen; sunDir.z /= sLen; }
 
-    Vec3f sceneCenter{0.0f, 5.0f, -2.0f};
+    Vec3f sceneCenter = cam.target;
+    // Texel snapping to prevent shadow shimmer and crawl as camera moves
+    const float shadowTexelSize = 92.0f / 2048.0f;
+    sceneCenter.x = std::round(sceneCenter.x / shadowTexelSize) * shadowTexelSize;
+    sceneCenter.z = std::round(sceneCenter.z / shadowTexelSize) * shadowTexelSize;
+
     Vec3f lightEye{
         sceneCenter.x + sunDir.x * 85.0f,
         sceneCenter.y + sunDir.y * 85.0f,
@@ -858,7 +1267,7 @@ void fillSceneUniforms(const RealmWorld& world, uint32_t width, uint32_t height,
 
     outU.camBasisX[0] = right.x; outU.camBasisX[1] = right.y; outU.camBasisX[2] = right.z; outU.camBasisX[3] = showReticle ? 1.0f : 0.0f;
     outU.camBasisY[0] = upVec.x; outU.camBasisY[1] = upVec.y; outU.camBasisY[2] = upVec.z; outU.camBasisY[3] = static_cast<float>(world.pointLights().size());
-    outU.camBasisZ[0] = fwd.x;   outU.camBasisZ[1] = fwd.y;   outU.camBasisZ[2] = fwd.z;   outU.camBasisZ[3] = 0.0f;
+    outU.camBasisZ[0] = fwd.x;   outU.camBasisZ[1] = fwd.y;   outU.camBasisZ[2] = fwd.z;   outU.camBasisZ[3] = atm.fogHeightFalloff;
 }
 
 struct GpuHd2dContext {
@@ -885,7 +1294,9 @@ struct GpuHd2dContext {
 
     WGPUBuffer uniformBuffer{nullptr};
     WGPUBuffer worldVertBuffer{nullptr};
+    size_t worldVertBufferCapacity{0};
     WGPUBuffer spriteBuffer{nullptr};
+    size_t spriteBufferCapacity{0};
     WGPUBuffer pointLightBuffer{nullptr};
 
     // Procedural Texture2DArray Atlases (64x64x24 Albedo + 64x64x24 Normal/Emissive)
@@ -911,6 +1322,8 @@ struct GpuHd2dContext {
 
     uint32_t uploadedWorldVertexCount{0};
     uint32_t uploadedSpriteCount{0};
+    uint32_t uploadedLod0WorldVertexCount{0};
+    uint32_t uploadedLod0SpriteCount{0};
 
     bool init(GLFWwindow* optWindow, uint32_t width, uint32_t height, const ProceduralAtlasData& atlas) {
         targetWidth = width;
@@ -1070,7 +1483,8 @@ struct GpuHd2dContext {
 
     bool createPipelinesAndResources(uint32_t width, uint32_t height, const ProceduralAtlasData& atlas) {
         WGPUShaderModule shadowSM = createShaderModule(device, kShadowWgslSource);
-        WGPUShaderModule sceneSM  = createShaderModule(device, kSceneWgslSource);
+        std::string sceneWgsl = getSceneWgslSource();
+        WGPUShaderModule sceneSM  = createShaderModule(device, sceneWgsl.c_str());
         WGPUShaderModule postSM   = createShaderModule(device, kPostProcessWgslSource);
         if (!shadowSM || !sceneSM || !postSM) return false;
 
@@ -1453,82 +1867,97 @@ struct GpuHd2dContext {
 
         uploadedWorldVertexCount = static_cast<uint32_t>(verts.size());
         uploadedSpriteCount = static_cast<uint32_t>(sprites.size());
+        uploadedLod0WorldVertexCount = world.lod0VertexCount();
+        uploadedLod0SpriteCount = world.lod0SpriteCount();
 
         if (!lights.empty()) {
             wgpuQueueWriteBuffer(queue, pointLightBuffer, 0, lights.data(), lights.size() * sizeof(PointLight));
         }
 
-        if (worldVertBuffer) { wgpuBufferDestroy(worldVertBuffer); wgpuBufferRelease(worldVertBuffer); worldVertBuffer = nullptr; }
-        if (spriteBuffer) { wgpuBufferDestroy(spriteBuffer); wgpuBufferRelease(spriteBuffer); spriteBuffer = nullptr; }
+        size_t vertBytes = std::max<size_t>(sizeof(WorldVertex) * 64, verts.size() * sizeof(WorldVertex));
+        size_t spriteBytes = std::max<size_t>(sizeof(Sprite3DInstance) * 16, sprites.size() * sizeof(Sprite3DInstance));
 
-        size_t vertBytes = std::max<size_t>(sizeof(WorldVertex), verts.size() * sizeof(WorldVertex));
-        WGPUBufferDescriptor vDesc{};
-        vDesc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
-        vDesc.size = vertBytes;
-        worldVertBuffer = wgpuDeviceCreateBuffer(device, &vDesc);
+        bool needRebind = false;
+        if (!worldVertBuffer || vertBytes > worldVertBufferCapacity) {
+            if (worldVertBuffer) { wgpuBufferDestroy(worldVertBuffer); wgpuBufferRelease(worldVertBuffer); worldVertBuffer = nullptr; }
+            worldVertBufferCapacity = std::max(vertBytes * 3 / 2, static_cast<size_t>(1024 * sizeof(WorldVertex)));
+            WGPUBufferDescriptor vDesc{};
+            vDesc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+            vDesc.size = worldVertBufferCapacity;
+            worldVertBuffer = wgpuDeviceCreateBuffer(device, &vDesc);
+            needRebind = true;
+        }
+
+        if (!spriteBuffer || spriteBytes > spriteBufferCapacity) {
+            if (spriteBuffer) { wgpuBufferDestroy(spriteBuffer); wgpuBufferRelease(spriteBuffer); spriteBuffer = nullptr; }
+            spriteBufferCapacity = std::max(spriteBytes * 3 / 2, static_cast<size_t>(256 * sizeof(Sprite3DInstance)));
+            WGPUBufferDescriptor sDesc{};
+            sDesc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+            sDesc.size = spriteBufferCapacity;
+            spriteBuffer = wgpuDeviceCreateBuffer(device, &sDesc);
+            needRebind = true;
+        }
+
         if (!verts.empty()) {
             wgpuQueueWriteBuffer(queue, worldVertBuffer, 0, verts.data(), verts.size() * sizeof(WorldVertex));
         }
 
-        size_t spriteBytes = std::max<size_t>(sizeof(Sprite3DInstance), sprites.size() * sizeof(Sprite3DInstance));
-        WGPUBufferDescriptor sDesc{};
-        sDesc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
-        sDesc.size = spriteBytes;
-        spriteBuffer = wgpuDeviceCreateBuffer(device, &sDesc);
         if (!sprites.empty()) {
             wgpuQueueWriteBuffer(queue, spriteBuffer, 0, sprites.data(), sprites.size() * sizeof(Sprite3DInstance));
         }
 
-        if (shadowBindGroup) { wgpuBindGroupRelease(shadowBindGroup); shadowBindGroup = nullptr; }
-        WGPUBindGroupEntry shEntries[4]{};
-        shEntries[0].binding = 0;
-        shEntries[0].buffer = uniformBuffer;
-        shEntries[0].size = sizeof(SceneUniforms);
-        shEntries[1].binding = 1;
-        shEntries[1].buffer = worldVertBuffer;
-        shEntries[1].size = vertBytes;
-        shEntries[2].binding = 2;
-        shEntries[2].buffer = spriteBuffer;
-        shEntries[2].size = spriteBytes;
-        shEntries[3].binding = 3;
-        shEntries[3].textureView = albedoAtlasView;
+        if (needRebind || !shadowBindGroup || !sceneBindGroup) {
+            if (shadowBindGroup) { wgpuBindGroupRelease(shadowBindGroup); shadowBindGroup = nullptr; }
+            WGPUBindGroupEntry shEntries[4]{};
+            shEntries[0].binding = 0;
+            shEntries[0].buffer = uniformBuffer;
+            shEntries[0].size = sizeof(SceneUniforms);
+            shEntries[1].binding = 1;
+            shEntries[1].buffer = worldVertBuffer;
+            shEntries[1].size = worldVertBufferCapacity;
+            shEntries[2].binding = 2;
+            shEntries[2].buffer = spriteBuffer;
+            shEntries[2].size = spriteBufferCapacity;
+            shEntries[3].binding = 3;
+            shEntries[3].textureView = albedoAtlasView;
 
-        WGPUBindGroupDescriptor shBgDesc{};
-        shBgDesc.layout = shadowBGL;
-        shBgDesc.entryCount = 4;
-        shBgDesc.entries = shEntries;
-        shadowBindGroup = wgpuDeviceCreateBindGroup(device, &shBgDesc);
+            WGPUBindGroupDescriptor shBgDesc{};
+            shBgDesc.layout = shadowBGL;
+            shBgDesc.entryCount = 4;
+            shBgDesc.entries = shEntries;
+            shadowBindGroup = wgpuDeviceCreateBindGroup(device, &shBgDesc);
 
-        if (sceneBindGroup) { wgpuBindGroupRelease(sceneBindGroup); sceneBindGroup = nullptr; }
-        WGPUBindGroupEntry scEntries[9]{};
-        scEntries[0].binding = 0;
-        scEntries[0].buffer = uniformBuffer;
-        scEntries[0].size = sizeof(SceneUniforms);
-        scEntries[1].binding = 1;
-        scEntries[1].buffer = worldVertBuffer;
-        scEntries[1].size = vertBytes;
-        scEntries[2].binding = 2;
-        scEntries[2].buffer = spriteBuffer;
-        scEntries[2].size = spriteBytes;
-        scEntries[3].binding = 3;
-        scEntries[3].buffer = pointLightBuffer;
-        scEntries[3].size = sizeof(PointLight) * RealmWorld::kMaxPointLights;
-        scEntries[4].binding = 4;
-        scEntries[4].textureView = albedoAtlasView;
-        scEntries[5].binding = 5;
-        scEntries[5].textureView = normalAtlasView;
-        scEntries[6].binding = 6;
-        scEntries[6].sampler = atlasSampler;
-        scEntries[7].binding = 7;
-        scEntries[7].textureView = shadowView;
-        scEntries[8].binding = 8;
-        scEntries[8].sampler = shadowSampler;
+            if (sceneBindGroup) { wgpuBindGroupRelease(sceneBindGroup); sceneBindGroup = nullptr; }
+            WGPUBindGroupEntry scEntries[9]{};
+            scEntries[0].binding = 0;
+            scEntries[0].buffer = uniformBuffer;
+            scEntries[0].size = sizeof(SceneUniforms);
+            scEntries[1].binding = 1;
+            scEntries[1].buffer = worldVertBuffer;
+            scEntries[1].size = worldVertBufferCapacity;
+            scEntries[2].binding = 2;
+            scEntries[2].buffer = spriteBuffer;
+            scEntries[2].size = spriteBufferCapacity;
+            scEntries[3].binding = 3;
+            scEntries[3].buffer = pointLightBuffer;
+            scEntries[3].size = sizeof(PointLight) * RealmWorld::kMaxPointLights;
+            scEntries[4].binding = 4;
+            scEntries[4].textureView = albedoAtlasView;
+            scEntries[5].binding = 5;
+            scEntries[5].textureView = normalAtlasView;
+            scEntries[6].binding = 6;
+            scEntries[6].sampler = atlasSampler;
+            scEntries[7].binding = 7;
+            scEntries[7].textureView = shadowView;
+            scEntries[8].binding = 8;
+            scEntries[8].sampler = shadowSampler;
 
-        WGPUBindGroupDescriptor scBgDesc{};
-        scBgDesc.layout = sceneBGL;
-        scBgDesc.entryCount = 9;
-        scBgDesc.entries = scEntries;
-        sceneBindGroup = wgpuDeviceCreateBindGroup(device, &scBgDesc);
+            WGPUBindGroupDescriptor scBgDesc{};
+            scBgDesc.layout = sceneBGL;
+            scBgDesc.entryCount = 9;
+            scBgDesc.entries = scEntries;
+            sceneBindGroup = wgpuDeviceCreateBindGroup(device, &scBgDesc);
+        }
     }
 
     void recordFramePasses(WGPUCommandEncoder encoder, WGPUTextureView finalColorTargetView) {
@@ -1545,13 +1974,15 @@ struct GpuHd2dContext {
 
         WGPURenderPassEncoder shPass = wgpuCommandEncoderBeginRenderPass(encoder, &shPassDesc);
         wgpuRenderPassEncoderSetBindGroup(shPass, 0, shadowBindGroup, 0, nullptr);
-        if (uploadedWorldVertexCount > 0) {
+        uint32_t shWorldCount = (uploadedLod0WorldVertexCount > 0) ? uploadedLod0WorldVertexCount : uploadedWorldVertexCount;
+        uint32_t shSpriteCount = (uploadedLod0SpriteCount > 0) ? uploadedLod0SpriteCount : uploadedSpriteCount;
+        if (shWorldCount > 0) {
             wgpuRenderPassEncoderSetPipeline(shPass, shadowWorldPipeline);
-            wgpuRenderPassEncoderDraw(shPass, uploadedWorldVertexCount, 1u, 0u, 0u);
+            wgpuRenderPassEncoderDraw(shPass, shWorldCount, 1u, 0u, 0u);
         }
-        if (uploadedSpriteCount > 0) {
+        if (shSpriteCount > 0) {
             wgpuRenderPassEncoderSetPipeline(shPass, shadowSpritePipeline);
-            wgpuRenderPassEncoderDraw(shPass, uploadedSpriteCount * 6u, 1u, 0u, 0u);
+            wgpuRenderPassEncoderDraw(shPass, shSpriteCount * 6u, 1u, 0u, 0u);
         }
         wgpuRenderPassEncoderEnd(shPass);
         wgpuRenderPassEncoderRelease(shPass);
@@ -1853,6 +2284,10 @@ struct FlyCamState {
     double lastMouseY{0.0};
     bool firstMouse{true};
     CameraConfig defaultCamera{};
+    float touchMoveFwd{0.0f};
+    float touchMoveRight{0.0f};
+    float touchMoveUp{0.0f};
+    bool touchSprint{false};
 };
 
 struct LoopContext {
@@ -1870,7 +2305,92 @@ struct LoopContext {
     bool wasFDown{false};
     bool wasRDown{false};
     bool wasLeftDown{false};
+    bool was1Down{false};
+    bool was2Down{false};
+    bool was3Down{false};
+    bool was4Down{false};
+    bool was5Down{false};
+    bool was6Down{false};
+    bool wasLeftBracketDown{false};
+    bool wasRightBracketDown{false};
+    bool autoAdvanceTime{false};
+    float timeSpeed{0.035f};
+    bool wasGDown{false};
+    double lastTitleUpdate{0.0};
+    Vec3f lastStreamCamPos{1e9f, 1e9f, 1e9f};
 };
+
+static LoopContext* s_activeLoop = nullptr;
+
+static const std::vector<std::string> s_knownScenes = {
+    "scenes/starfall_vale.eats",
+    "scenes/whispering_woods.eats",
+    "scenes/azure_cove.eats",
+    "scenes/cursed_hamlet.eats",
+    "scenes/highland_bridge.eats",
+    "scenes/open_realm.eats"
+};
+
+static bool loadScene(LoopContext& l, const std::string& scenePath) {
+    if (!std::filesystem::exists(scenePath)) {
+        std::cerr << "[Eatsrealms] Scene file not found: " << scenePath << "\n";
+        return false;
+    }
+    std::cout << "[Eatsrealms] Switching scene to: " << scenePath << " ...\n";
+    if (l.scriptEngine->executeFile(scenePath)) {
+        l.watchedScriptPath = scenePath;
+#if !defined(__EMSCRIPTEN__)
+        try {
+            l.lastScriptWriteTime = std::filesystem::last_write_time(scenePath);
+        } catch (...) {}
+#endif
+        l.ctx->uploadRealmGeometryAndEntities(*l.world);
+
+        // Reset camera view to match the new scene
+        l.camState->defaultCamera = l.world->camera();
+        Vec3f initFwd{
+            l.world->camera().target.x - l.world->camera().position.x,
+            l.world->camera().target.y - l.world->camera().position.y,
+            l.world->camera().target.z - l.world->camera().position.z
+        };
+        float initLen = std::sqrt(initFwd.x * initFwd.x + initFwd.y * initFwd.y + initFwd.z * initFwd.z);
+        if (initLen > 1e-5f) {
+            initFwd.x /= initLen; initFwd.y /= initLen; initFwd.z /= initLen;
+        } else {
+            initFwd = {0.0f, 0.0f, 1.0f};
+        }
+        l.camState->pitch = std::asin(std::clamp(initFwd.y, -1.0f, 1.0f));
+        l.camState->yaw   = std::atan2(initFwd.x, initFwd.z);
+        l.camState->defaultPitch = l.camState->pitch;
+        l.camState->defaultYaw   = l.camState->yaw;
+
+        std::string title = "Eatsrealms - " + scenePath + " [Keys: 1, 2, 3, 4 | FlyCam: WASD]";
+        glfwSetWindowTitle(l.window, title.c_str());
+
+#if defined(__EMSCRIPTEN__)
+        std::string jsCall = "if (window.onSceneLoaded) window.onSceneLoaded('" + scenePath + "');";
+        emscripten_run_script(jsCall.c_str());
+#endif
+        std::cout << "[Eatsrealms] Scene successfully loaded: " << scenePath << "\n";
+        return true;
+    } else {
+        std::cerr << "[Eatsrealms] Error executing scene script: " << l.scriptEngine->lastError() << "\n";
+        return false;
+    }
+}
+
+static void cycleScene(LoopContext& l, int delta) {
+    if (s_knownScenes.empty()) return;
+    int curIdx = 0;
+    for (size_t i = 0; i < s_knownScenes.size(); ++i) {
+        if (s_knownScenes[i] == l.watchedScriptPath) {
+            curIdx = static_cast<int>(i);
+            break;
+        }
+    }
+    int newIdx = (curIdx + delta + static_cast<int>(s_knownScenes.size())) % static_cast<int>(s_knownScenes.size());
+    loadScene(l, s_knownScenes[newIdx]);
+}
 
 static void renderSingleFrame(LoopContext& l) {
     glfwPollEvents();
@@ -1901,6 +2421,55 @@ static void renderSingleFrame(LoopContext& l) {
     }
 #endif
 
+    // Scene switching hotkeys (1: Starfall Vale, 2: Whispering Woods, 3: Azure Cove, 4: Cursed Hamlet, [/]: Cycle)
+    bool key1Down = glfwGetKey(l.window, GLFW_KEY_1) == GLFW_PRESS;
+    if (key1Down && !l.was1Down) {
+        loadScene(l, "scenes/starfall_vale.eats");
+    }
+    l.was1Down = key1Down;
+
+    bool key2Down = glfwGetKey(l.window, GLFW_KEY_2) == GLFW_PRESS;
+    if (key2Down && !l.was2Down) {
+        loadScene(l, "scenes/whispering_woods.eats");
+    }
+    l.was2Down = key2Down;
+
+    bool key3Down = glfwGetKey(l.window, GLFW_KEY_3) == GLFW_PRESS;
+    if (key3Down && !l.was3Down) {
+        loadScene(l, "scenes/azure_cove.eats");
+    }
+    l.was3Down = key3Down;
+
+    bool key4Down = glfwGetKey(l.window, GLFW_KEY_4) == GLFW_PRESS;
+    if (key4Down && !l.was4Down) {
+        loadScene(l, "scenes/cursed_hamlet.eats");
+    }
+    l.was4Down = key4Down;
+
+    bool key5Down = glfwGetKey(l.window, GLFW_KEY_5) == GLFW_PRESS;
+    if (key5Down && !l.was5Down) {
+        loadScene(l, "scenes/highland_bridge.eats");
+    }
+    l.was5Down = key5Down;
+
+    bool key6Down = glfwGetKey(l.window, GLFW_KEY_6) == GLFW_PRESS;
+    if (key6Down && !l.was6Down) {
+        loadScene(l, "scenes/open_realm.eats");
+    }
+    l.was6Down = key6Down;
+
+    bool leftBracketDown = glfwGetKey(l.window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS;
+    if (leftBracketDown && !l.wasLeftBracketDown) {
+        cycleScene(l, -1);
+    }
+    l.wasLeftBracketDown = leftBracketDown;
+
+    bool rightBracketDown = glfwGetKey(l.window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS;
+    if (rightBracketDown && !l.wasRightBracketDown) {
+        cycleScene(l, +1);
+    }
+    l.wasRightBracketDown = rightBracketDown;
+
     bool tabDown = glfwGetKey(l.window, GLFW_KEY_TAB) == GLFW_PRESS;
     bool escDown = glfwGetKey(l.window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
     if ((tabDown && !l.wasTabDown) || (escDown && !l.wasEscDown)) {
@@ -1928,6 +2497,40 @@ static void renderSingleFrame(LoopContext& l) {
         l.camState->yaw   = l.camState->defaultYaw;
     }
     l.wasRDown = rDown;
+
+    // Day/Night Cycle controls: T = advance forward, Y = reverse backward, G = toggle auto progression
+    if (glfwGetKey(l.window, GLFW_KEY_T) == GLFW_PRESS) {
+        l.world->setTimeOfDay(l.world->timeOfDay() + dt * 0.15f);
+    }
+    if (glfwGetKey(l.window, GLFW_KEY_Y) == GLFW_PRESS) {
+        l.world->setTimeOfDay(l.world->timeOfDay() - dt * 0.15f);
+    }
+    bool gDown = glfwGetKey(l.window, GLFW_KEY_G) == GLFW_PRESS;
+    if (gDown && !l.wasGDown) {
+        l.autoAdvanceTime = !l.autoAdvanceTime;
+        std::cout << "[Eatsrealms] Day/Night Auto-Progression: " << (l.autoAdvanceTime ? "ENABLED" : "PAUSED") << "\n";
+    }
+    l.wasGDown = gDown;
+
+    if (l.autoAdvanceTime) {
+        l.world->setTimeOfDay(l.world->timeOfDay() + dt * l.timeSpeed);
+    }
+
+    if (currentFrameTime - l.lastTitleUpdate > 0.12) {
+        l.lastTitleUpdate = currentFrameTime;
+        float curT = l.world->timeOfDay();
+        float frac = curT - std::floor(curT);
+        if (frac < 0.0f) frac += 1.0f;
+        int hours = static_cast<int>(frac * 24.0f) % 24;
+        int mins  = static_cast<int>((frac * 24.0f - static_cast<float>(hours)) * 60.0f) % 60;
+        char titleBuf[256];
+        std::snprintf(titleBuf, sizeof(titleBuf),
+                      "Eatsrealms - %s [%02d:%02d %s%s] (T/Y: Time | G: Auto | 1/2: Scene | Fly: WASD)",
+                      l.watchedScriptPath.c_str(), hours, mins,
+                      AtmosphereConfig::timePeriodName(frac),
+                      l.autoAdvanceTime ? " Play" : "");
+        glfwSetWindowTitle(l.window, titleBuf);
+    }
 
     if (l.camState->cursorCaptured) {
         double mx = 0.0, my = 0.0;
@@ -1958,40 +2561,66 @@ static void renderSingleFrame(LoopContext& l) {
         0.0f,
         -std::sin(l.camState->yaw)
     };
+    Vec3f upVec{
+        fwd.y * right.z - fwd.z * right.y,
+        fwd.z * right.x - fwd.x * right.z,
+        fwd.x * right.y - fwd.y * right.x
+    };
+    float uLen = std::sqrt(upVec.x * upVec.x + upVec.y * upVec.y + upVec.z * upVec.z);
+    if (uLen > 1e-6f) { upVec.x /= uLen; upVec.y /= uLen; upVec.z /= uLen; }
 
     Vec3f moveDir{0.0f, 0.0f, 0.0f};
-    if (l.camState->cursorCaptured) {
-        if (glfwGetKey(l.window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_UP) == GLFW_PRESS) {
-            moveDir.x += fwd.x; moveDir.y += fwd.y; moveDir.z += fwd.z;
-        }
-        if (glfwGetKey(l.window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-            moveDir.x -= fwd.x; moveDir.y -= fwd.y; moveDir.z -= fwd.z;
-        }
-        if (glfwGetKey(l.window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-            moveDir.x += right.x; moveDir.z += right.z;
-        }
-        if (glfwGetKey(l.window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-            moveDir.x -= right.x; moveDir.z -= right.z;
-        }
-        if (glfwGetKey(l.window, GLFW_KEY_E) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            moveDir.y += 1.0f;
-        }
-        if (glfwGetKey(l.window, GLFW_KEY_Q) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_C) == GLFW_PRESS) {
-            moveDir.y -= 1.0f;
+    bool hasTouchMove = false;
+#if defined(__EMSCRIPTEN__)
+    if (std::abs(l.camState->touchMoveFwd) > 1e-4f ||
+        std::abs(l.camState->touchMoveRight) > 1e-4f ||
+        std::abs(l.camState->touchMoveUp) > 1e-4f) {
+        hasTouchMove = true;
+        moveDir.x += fwd.x * l.camState->touchMoveFwd + right.x * l.camState->touchMoveRight;
+        moveDir.y += fwd.y * l.camState->touchMoveFwd + l.camState->touchMoveUp;
+        moveDir.z += fwd.z * l.camState->touchMoveFwd + right.z * l.camState->touchMoveRight;
+    }
+#endif
+
+    if (l.camState->cursorCaptured || hasTouchMove) {
+        if (l.camState->cursorCaptured) {
+            if (glfwGetKey(l.window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_UP) == GLFW_PRESS) {
+                moveDir.x += fwd.x; moveDir.y += fwd.y; moveDir.z += fwd.z;
+            }
+            if (glfwGetKey(l.window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_DOWN) == GLFW_PRESS) {
+                moveDir.x -= fwd.x; moveDir.y -= fwd.y; moveDir.z -= fwd.z;
+            }
+            if (glfwGetKey(l.window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+                moveDir.x += right.x; moveDir.z += right.z;
+            }
+            if (glfwGetKey(l.window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_LEFT) == GLFW_PRESS) {
+                moveDir.x -= right.x; moveDir.z -= right.z;
+            }
+            if (glfwGetKey(l.window, GLFW_KEY_E) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+                moveDir.y += 1.0f;
+            }
+            if (glfwGetKey(l.window, GLFW_KEY_Q) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_C) == GLFW_PRESS) {
+                moveDir.y -= 1.0f;
+            }
         }
 
         float lenSq = moveDir.x * moveDir.x + moveDir.y * moveDir.y + moveDir.z * moveDir.z;
         if (lenSq > 1e-5f) {
-            float invLen = 1.0f / std::sqrt(lenSq);
-            moveDir.x *= invLen; moveDir.y *= invLen; moveDir.z *= invLen;
+            float len = std::sqrt(lenSq);
+            float normMult = (len > 1.0f) ? (1.0f / len) : 1.0f;
+            moveDir.x *= normMult; moveDir.y *= normMult; moveDir.z *= normMult;
 
             float speed = l.camState->baseSpeed;
-            if (glfwGetKey(l.window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-                glfwGetKey(l.window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS) {
+            if ((l.camState->cursorCaptured && (glfwGetKey(l.window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                                                glfwGetKey(l.window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS))
+#if defined(__EMSCRIPTEN__)
+                || l.camState->touchSprint
+#endif
+            ) {
                 speed *= 2.5f;
             }
-            if (glfwGetKey(l.window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
-                glfwGetKey(l.window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS) {
+            if (l.camState->cursorCaptured && (glfwGetKey(l.window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                                               glfwGetKey(l.window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS)) {
                 speed *= 0.25f;
             }
 
@@ -2005,24 +2634,74 @@ static void renderSingleFrame(LoopContext& l) {
     l.world->camera().target.y = l.world->camera().position.y + fwd.y * 20.0f;
     l.world->camera().target.z = l.world->camera().position.z + fwd.z * 20.0f;
 
+    // Real-time on-demand open world chunk streaming as camera flies/travels (No Man's Sky architecture)
+    if (l.world->isOpenWorld()) {
+        Vec3f curCam = l.world->camera().position;
+        float dx = curCam.x - l.lastStreamCamPos.x;
+        float dz = curCam.z - l.lastStreamCamPos.z;
+        if (std::sqrt(dx * dx + dz * dz) > 8.0f) {
+            l.lastStreamCamPos = curCam;
+            bool changed = l.world->streamChunksAround(curCam, 450.0f, 650.0f);
+            if (changed) {
+                l.ctx->uploadRealmGeometryAndEntities(*l.world);
+            }
+        }
+    }
+
+    Vec3f focusRay = fwd;
+    if (!l.camState->cursorCaptured) {
+        double mx = 0.0, my = 0.0;
+        glfwGetCursorPos(l.window, &mx, &my);
+        int winW = 1, winH = 1;
+        glfwGetWindowSize(l.window, &winW, &winH);
+        float ndcX = (static_cast<float>(mx) / std::max(1.0f, static_cast<float>(winW))) * 2.0f - 1.0f;
+        float ndcY = 1.0f - (static_cast<float>(my) / std::max(1.0f, static_cast<float>(winH))) * 2.0f;
+        ndcX = std::clamp(ndcX, -1.0f, 1.0f);
+        ndcY = std::clamp(ndcY, -1.0f, 1.0f);
+
+        float fovRad = l.world->camera().fovDegrees * (3.1415926535f / 180.0f);
+        float tanHalfFov = std::tan(fovRad * 0.5f);
+        float aspect = static_cast<float>(winW) / std::max(1.0f, static_cast<float>(winH));
+
+        focusRay = {
+            fwd.x + right.x * (ndcX * tanHalfFov * aspect) + upVec.x * (ndcY * tanHalfFov),
+            fwd.y + right.y * (ndcX * tanHalfFov * aspect) + upVec.y * (ndcY * tanHalfFov),
+            fwd.z + right.z * (ndcX * tanHalfFov * aspect) + upVec.z * (ndcY * tanHalfFov)
+        };
+        float rLen = std::sqrt(focusRay.x * focusRay.x + focusRay.y * focusRay.y + focusRay.z * focusRay.z);
+        if (rLen > 1e-5f) { focusRay.x /= rLen; focusRay.y /= rLen; focusRay.z /= rLen; }
+    }
+
     if (l.camState->autoFocus) {
-        RaycastHit hit = l.world->raycast(l.world->camera().position, fwd, 200.0f);
-        float targetDist = hit.hit ? hit.distance : 40.0f;
-        float blend = std::clamp(dt * 7.0f, 0.0f, 1.0f);
+        RaycastHit hit = l.world->raycast(l.world->camera().position, focusRay, 250.0f);
+        float targetDist = l.world->camera().focusDistance;
+        if (hit.hit) {
+            // Content within viewing distance (< 80m) is brought cleanly into focus.
+            // If the user looks into the far reaches of the map (> 80m), cap the target so
+            // surrounding navigation geometry stays clear while distant mountains stay softly blurred.
+            if (hit.distance <= 80.0f) {
+                targetDist = hit.distance;
+            } else {
+                targetDist = std::min(hit.distance, 80.0f);
+            }
+        } else {
+            // Open sky: settle at comfortable navigation focal depth
+            targetDist = std::clamp(l.world->camera().focusDistance, 35.0f, 60.0f);
+        }
+        float blend = std::clamp(dt * 8.5f, 0.0f, 1.0f);
         l.world->camera().focusDistance = std::lerp(l.world->camera().focusDistance, targetDist, blend);
     }
 
     bool leftDown = glfwGetMouseButton(l.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     if (leftDown && !l.wasLeftDown) {
+        RaycastHit hit = l.world->raycast(l.world->camera().position, focusRay, 250.0f);
+        if (hit.hit) {
+            l.foleyEngine->triggerMaterialImpact(hit.layerId, 0.9f);
+        }
         if (!l.camState->cursorCaptured) {
             l.camState->cursorCaptured = true;
             l.camState->firstMouse = true;
             glfwSetInputMode(l.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        } else {
-            RaycastHit hit = l.world->raycast(l.world->camera().position, fwd, 200.0f);
-            if (hit.hit) {
-                l.foleyEngine->triggerMaterialImpact(hit.layerId, 0.9f);
-            }
         }
     }
     l.wasLeftDown = leftDown;
@@ -2100,6 +2779,8 @@ int Hd2dRenderer::runInteractiveWindow(
     std::cout << "\n============================================================\n"
               << "  Eatsrealms HD-2D Diorama Navigation (Fly Mode Active)     \n"
               << "============================================================\n"
+              << "  1 / 2 / 3         : Switch Scene (1: Starfall Vale, 2: Whispering Woods, 3: Azure Cove)\n"
+              << "  [ / ]             : Cycle Previous / Next Scene\n"
               << "  Mouse Move        : Free Look (Pitch & Yaw)\n"
               << "  W / S / A / D     : Move & Strafe\n"
               << "  E / Space | Q / C : Ascend / Descend\n"
@@ -2153,6 +2834,7 @@ int Hd2dRenderer::runInteractiveWindow(
     loop.camState = &camState;
     loop.lastScriptWriteTime = lastScriptWriteTime;
     loop.lastFrameTime = glfwGetTime();
+    s_activeLoop = &loop;
 
 #if defined(__EMSCRIPTEN__)
     static LoopContext s_webLoop;
@@ -2163,6 +2845,7 @@ int Hd2dRenderer::runInteractiveWindow(
     s_webLoop = loop;
     s_webLoop.ctx = &s_webCtx;
     s_webLoop.camState = &s_webCam;
+    s_activeLoop = &s_webLoop;
     glfwSetWindowUserPointer(window, s_webLoop.camState);
 
     emscripten_set_main_loop_arg([](void* arg) {
@@ -2183,5 +2866,63 @@ int Hd2dRenderer::runInteractiveWindow(
     return 0;
 #endif
 }
+
+#if defined(__EMSCRIPTEN__)
+extern "C" {
+EMSCRIPTEN_KEEPALIVE int eatsrealms_load_scene(const char* scenePath) {
+    if (s_activeLoop && scenePath) {
+        return loadScene(*s_activeLoop, std::string(scenePath)) ? 1 : 0;
+    }
+    return 0;
+}
+EMSCRIPTEN_KEEPALIVE void eatsrealms_set_time_of_day(float t) {
+    if (s_activeLoop && s_activeLoop->world) {
+        s_activeLoop->world->setTimeOfDay(t);
+    }
+}
+EMSCRIPTEN_KEEPALIVE float eatsrealms_get_time_of_day() {
+    if (s_activeLoop && s_activeLoop->world) {
+        return s_activeLoop->world->timeOfDay();
+    }
+    return 0.38f;
+}
+EMSCRIPTEN_KEEPALIVE int eatsrealms_toggle_time_progression() {
+    if (s_activeLoop) {
+        s_activeLoop->autoAdvanceTime = !s_activeLoop->autoAdvanceTime;
+        return s_activeLoop->autoAdvanceTime ? 1 : 0;
+    }
+    return 0;
+}
+EMSCRIPTEN_KEEPALIVE void eatsrealms_set_touch_move(float fwd, float right, float up, int sprint) {
+    if (s_activeLoop && s_activeLoop->camState) {
+        s_activeLoop->camState->touchMoveFwd = fwd;
+        s_activeLoop->camState->touchMoveRight = right;
+        s_activeLoop->camState->touchMoveUp = up;
+        s_activeLoop->camState->touchSprint = (sprint != 0);
+    }
+}
+EMSCRIPTEN_KEEPALIVE void eatsrealms_add_camera_look(float deltaYaw, float deltaPitch) {
+    if (s_activeLoop && s_activeLoop->camState) {
+        s_activeLoop->camState->yaw += deltaYaw;
+        s_activeLoop->camState->pitch += deltaPitch;
+        s_activeLoop->camState->pitch = std::clamp(s_activeLoop->camState->pitch, -1.535f, 1.535f);
+    }
+}
+EMSCRIPTEN_KEEPALIVE void eatsrealms_reset_camera() {
+    if (s_activeLoop && s_activeLoop->camState && s_activeLoop->world) {
+        s_activeLoop->world->camera() = s_activeLoop->camState->defaultCamera;
+        s_activeLoop->camState->pitch = s_activeLoop->camState->defaultPitch;
+        s_activeLoop->camState->yaw   = s_activeLoop->camState->defaultYaw;
+    }
+}
+EMSCRIPTEN_KEEPALIVE int eatsrealms_toggle_focus() {
+    if (s_activeLoop && s_activeLoop->camState) {
+        s_activeLoop->camState->autoFocus = !s_activeLoop->camState->autoFocus;
+        return s_activeLoop->camState->autoFocus ? 1 : 0;
+    }
+    return 1;
+}
+}
+#endif
 
 } // namespace eatsrealms

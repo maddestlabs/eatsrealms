@@ -28,6 +28,13 @@ See it live: [Eatsrealms](https://maddestlabs.github.io/eatsrealms/)
 3. 2.5D Sprite3D Billboards: Camera-aligned, shadow-casting, normal-mapped sprite instances rendered via instanced storage buffers.
 4. Lighting and Post-Processing: Directional sunlight, shadow mapping, dynamic point lights, and real-time tilt-shift miniature depth of field.
 5. Eatscript Integration: Declarative scene generation recipes (.eats files) defining terrain, architecture, cameras, and entities.
+6. Narrative History Simulator: "The Archaeology of Intent" world generation simulating historical eras, characters, foundation, prosperity, calamity, and ruin diorama synthesis.
+7. Eatsrealms Open Architecture: Massive continuous open world extending dioramas across kilometers:
+   - **Hierarchical Raw-Block LOD (Block Mipmapping):** Downsampled elevation pyramids (LOD 0: 1.5m diorama, LOD 1: 3.0m aggregated blocks, LOD 2: 6.0m macro blocks, LOD 3: 12.0m horizon ridges).
+   - **2D Greedy Meshing:** Compresses coplanar block tops and cardinal cliff wall ribbons, collapsing 512+ raw block triangles into ~18 merged triangles per chunk.
+   - **Distance-Based Flora Culling & Shadow Exclusion:** Automatically strips micro-flora beyond 70m (`kFloraRadius`), and restricts shadow cascade casting to LOD 0 geometry.
+   - **Sliding Clipmap Streaming Ring:** Procedural chunks evaluated on-demand from deterministic Eatscript seeds centered on camera target.
+   - **Atmospheric Height Fog & Ridge Silhouettes:** Vertical exponential height fog pooling in valleys and procedural sawtooth pine canopy strips on distant mountain ridges.
 
 ## Building and Running
 
@@ -89,12 +96,14 @@ The main binary supports both interactive and headless execution:
 
 ## Diorama Navigation Controls
 
-- Mouse Move: Free Look (Pitch and Yaw)
-- W / S / A / D: Move and Strafe
-- E / Space | Q / C: Ascend / Descend
-- Left Shift / Ctrl: Sprint (2.5x) / Precision (0.25x)
-- Mouse Wheel: Adjust Flight Speed
-- Left Click: Raycast Terrain and Procedural Foley
-- TAB / ESC: Toggle Cursor Lock
-- F: Toggle Dynamic Tilt-Shift Auto-Focus
-- R: Reset Camera to HD-2D Default
+- **1 / 2 / 3 / 4 / 5 / 6**: Switch Scene (`1`: Starfall Vale, `2`: Whispering Woods, `3`: Azure Cove, `4`: Cursed Hamlet, `5`: Highland Bridge, `6`: Eatsrealms Open)
+- **[ / ]**: Cycle Previous / Next Scene Recipe
+- **Mouse Move**: Free Look (Pitch and Yaw)
+- **W / S / A / D**: Move and Strafe
+- **E / Space | Q / C**: Ascend / Descend
+- **Left Shift / Ctrl**: Sprint (2.5x) / Precision (0.25x)
+- **Mouse Wheel**: Adjust Flight Speed
+- **Left Click**: Raycast Terrain and Procedural Foley
+- **TAB / ESC**: Toggle Cursor Lock
+- **F**: Toggle Dynamic Tilt-Shift Auto-Focus
+- **R**: Reset Camera to HD-2D Default

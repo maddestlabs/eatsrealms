@@ -1,0 +1,33 @@
+# Eatsrealms Open — Continuous Procedural World (No Man's Sky architecture)
+# Entire world synthesized deterministically from seed as camera moves!
+# Hierarchical Block LODs (LOD0 -> LOD3), 2D Greedy Meshing,
+# Macro-Regional History Simulation, Narrative Lore Grid, and Architectural POIs.
+
+# Discover the nearest macro-regional historical site
+var site = realm.get_macro_site(0.0, 0.0, 777)
+var tx = site["x"]
+var tz = site["z"]
+
+# Stream open world chunks centered directly on this historical site
+realm.generate_open_world(seed=777, radius=6, center_x=tx, center_z=tz)
+
+var ty = realm.get_terrain_height(tx, tz)
+
+# Place central traveler waypoint & adventuring party approaching the POI
+realm.add_roadside_beacon(tx + 6.0, ty + 0.8, tz + 4.5, 0.25, 1.85, 0.65)
+realm.spawn_sprite(tx + 4.2, tz + 3.2, 1.8, 2.4, Tex["SpriteHero"], 4)
+realm.spawn_sprite(tx + 3.0, tz + 4.8, 1.8, 2.4, Tex["SpriteCleric"], 4)
+
+# Set cinematic vantage camera framing the historical structure, dynamic lights, and surrounding biome
+realm.set_camera(tx - 28.0, ty + 18.0, tz - 34.0, tx, ty + 5.0, tz, 25.0, 46.0, 18.0, 20.0)
+realm.set_time_of_day(0.38)
+
+print("============================================================")
+print("  REGIONAL LORE DISCOVERY (Open World Macro Grid)")
+print("============================================================")
+print("  POI Site     : " + site["name"])
+print("  Notable Lore : " + site["headline"])
+print("  Chronicle    : " + site["chronicle"])
+print("  Figure       : " + site["figure"])
+print("  Coordinates  : (" + str(site["x"]) + ", " + str(site["z"]) + ")  Ground H: " + str(ty) + "m")
+print("============================================================")

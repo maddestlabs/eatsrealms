@@ -1,0 +1,7 @@
+# Whispering Woods — HD-2D Woodland Forest Trail Scene Recipe
+# Inspired by the reference screenshot: stepped mossy contour terraces,
+# overhanging grass lips, winding dirt trail, backlit conifer pines,
+# star ferns, and a radiant sunbeam pool illuminating the lone wanderer.
+
+realm.build_woodland_trail(seed=5642)
+realm.set_camera(-2.5, 23.0, -32.5, -2.0, 4.2, 3.5, 27.0, 37.0, 8.5, 10.0)

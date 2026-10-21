@@ -1,0 +1,16 @@
+# Cursed Hamlet of Blackhollow Vale — Narrative History Simulation Recipe
+# Live hot-reloaded by Eatsrealms whenever this file is saved!
+#
+# Generated via "The Archaeology of Intent" simulated timeline:
+# - Era 1 (Foundation): Alden the Miller builds the watermill, weir, and farm terraces
+# - Era 2 (Prosperity): The crossroads tavern, arched bridge, and Master Raymond's bluff manor
+# - Era 3 (Obsession): Excavation of the sunken crypt, iron cages, and glowing runic altar
+# - Era 4 (Calamity): Experiment IX breach, bridge barricade, collapsed charred tavern, sheared bridge
+# - Era 5 (Reclamation): Twilight overgrowth diorama, lurking chimera, and arriving adventurer party
+#
+# Hotkeys: 1: Starfall Vale | 2: Whispering Woods | 3: Azure Cove | 4: Cursed Hamlet
+
+realm.build_chronicle_hamlet(seed=129)
+realm.set_time_of_day(0.88)
+realm.set_camera(-6.5, 24.0, -32.5, -6.0, 5.0, 3.5, 32.0, 35.0, 22.0, 6.5)
+realm.add_ruined_house()

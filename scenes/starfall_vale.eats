@@ -1,5 +1,5 @@
 # Starfall Vale — HD-2D RPG Village & Highland Ruins Scene Recipe
 # Live hot-reloaded by Eatsrealms whenever this file is saved!
 
-realm.build_starfall_vale()
+realm.build_starfall_vale(seed=12)
 realm.set_camera(-4.5, 24.5, -39.0, -2.5, 4.8, -4.5, 28.0, 39.5, 15.5, 8.0)

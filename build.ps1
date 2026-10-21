@@ -212,7 +212,13 @@ if (-not (Test-Path $buildDir)) {
     New-Item -ItemType Directory -Path $buildDir | Out-Null
 }
 
-cmake -B build -S .
+$cmakeArgs = @("-B", "build", "-S", ".")
+if ($Test) {
+    $cmakeArgs += "-DBUILD_TESTING=ON"
+} else {
+    $cmakeArgs += "-DBUILD_TESTING=OFF"
+}
+cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 cmake --build build --config $Config --parallel

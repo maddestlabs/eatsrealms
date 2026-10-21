@@ -1,0 +1,10 @@
+# Highland Bridge — HD-2D Mountain River Gorge & Suspension Bridge Scene Recipe
+# Inspired by Octopath Traveler II: Multi-level stepped contour terraces,
+# smooth sloping cobblestone roads winding down the hillsides,
+# authentic rustic timber suspension footbridge with slanted A-frame masts,
+# diagonal tension stays, 4-member party crossing in single file,
+# roadside glowing emerald beacon, background second trestle bridge,
+# and cinematic tilt-shift miniature depth of field with soft river mist.
+
+realm.build_highland_bridge(seed=42)
+realm.set_camera(0.0, 15.0, -38.0, 0.2, 2.5, 2.0, 26.5, 35.0, 9.0, 16.0)

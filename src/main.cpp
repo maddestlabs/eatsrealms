@@ -11,6 +11,7 @@ int main(int argc, char** argv) {
     std::string outputPngPath;
     uint32_t width = 1280;
     uint32_t height = 720;
+    float specifiedTime = -1.0f;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -18,6 +19,11 @@ int main(int argc, char** argv) {
             outputPngPath = argv[++i];
         } else if (arg == "--script" && i + 1 < argc) {
             scriptPath = argv[++i];
+        } else if ((arg == "--time" || arg == "--time-of-day") && i + 1 < argc) {
+            specifiedTime = std::stof(argv[++i]);
+            if (specifiedTime > 1.0f && specifiedTime <= 24.0f) {
+                specifiedTime /= 24.0f;
+            }
         } else if (arg == "--width" && i + 1 < argc) {
             width = static_cast<uint32_t>(std::stoul(argv[++i]));
         } else if (arg == "--height" && i + 1 < argc) {
@@ -42,6 +48,10 @@ int main(int argc, char** argv) {
     } else {
         std::cout << "[Eatsrealms] Building default Starfall Vale HD-2D RPG Village & Highland Ruins...\n";
         world.buildStarfallValeRealm();
+    }
+
+    if (specifiedTime >= 0.0f) {
+        world.setTimeOfDay(specifiedTime);
     }
 
     eatsrealms::RealmStats stats = world.rebuildWorldGeometry();

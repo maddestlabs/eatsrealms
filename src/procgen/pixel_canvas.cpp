@@ -186,21 +186,37 @@ namespace {
 
 void generateGrassTile(PixelCanvas& c, RGBA8 darkCol, RGBA8 midCol, RGBA8 lightCol, RGBA8 flowerCol, uint32_t seed, bool withFlowers) {
     const int s = static_cast<int>(c.width());
+    RGBA8 deepMoss{
+        static_cast<uint8_t>(darkCol.r * 3 / 4),
+        static_cast<uint8_t>(darkCol.g * 3 / 4),
+        static_cast<uint8_t>(darkCol.b * 3 / 4),
+        255
+    };
+    RGBA8 goldenMoss{
+        static_cast<uint8_t>(std::min(255, lightCol.r + 28)),
+        static_cast<uint8_t>(std::min(255, lightCol.g + 22)),
+        static_cast<uint8_t>(lightCol.b * 2 / 3),
+        255
+    };
+
     for (int y = 0; y < s; ++y) {
         for (int x = 0; x < s; ++x) {
             float n = PixelCanvas::fbm2D(x * 0.14f, y * 0.14f, 3, seed) + PixelCanvas::bayer4x4(x, y) * 0.12f;
-            RGBA8 col = (n < 0.42f) ? darkCol : ((n < 0.64f) ? midCol : lightCol);
-            float h = 0.35f + n * 0.35f;
+            RGBA8 col = (n < 0.34f) ? deepMoss : ((n < 0.54f) ? darkCol : ((n < 0.74f) ? midCol : ((n < 0.88f) ? lightCol : goldenMoss)));
+            float h = 0.28f + n * 0.44f;
             c.setPixel(x, y, col, h, 0);
         }
     }
-    // Crisp pixel-art grass blade clusters
-    for (int i = 0; i < 95; ++i) {
+    // Crisp pixel-art grass blade clusters & moss sprigs
+    for (int i = 0; i < 110; ++i) {
         int bx = static_cast<int>(PixelCanvas::hash2D(i, 1, seed) * s);
         int by = static_cast<int>(PixelCanvas::hash2D(i, 2, seed) * s);
-        c.setPixelWrapped(bx, by, darkCol, 0.25f);
+        c.setPixelWrapped(bx, by, deepMoss, 0.22f);
         c.setPixelWrapped(bx, by - 1, midCol, 0.65f);
         c.setPixelWrapped(bx + ((i & 1) ? 1 : -1), by - 2, lightCol, 0.88f);
+        if (i % 6 == 0) {
+            c.setPixelWrapped(bx, by - 2, goldenMoss, 0.94f);
+        }
         if (withFlowers && (i % 14 == 0)) {
             c.setPixelWrapped(bx, by - 2, flowerCol, 0.95f);
             c.setPixelWrapped(bx + 1, by - 2, flowerCol, 0.90f);
@@ -210,27 +226,48 @@ void generateGrassTile(PixelCanvas& c, RGBA8 darkCol, RGBA8 midCol, RGBA8 lightC
 
 void generateCliffStoneTile(PixelCanvas& c, uint32_t seed) {
     const int s = static_cast<int>(c.width());
-    RGBA8 crevice{42, 39, 48, 255};
-    RGBA8 darkRock{76, 72, 82, 255};
-    RGBA8 midRock{108, 102, 112, 255};
-    RGBA8 warmHigh{142, 132, 136, 255};
+    RGBA8 crevice{36, 32, 42, 255};
+    RGBA8 darkRock{68, 64, 76, 255};
+    RGBA8 midRock{102, 98, 110, 255};
+    RGBA8 warmHigh{138, 132, 138, 255};
+
+    // Deep forest moss colors for the top drooping grass-lip
+    RGBA8 mossDark{34, 58, 36, 255};
+    RGBA8 mossMid{56, 94, 46, 255};
+    RGBA8 mossLight{86, 136, 62, 255};
+    RGBA8 mossGold{132, 168, 74, 255};
 
     for (int y = 0; y < s; ++y) {
         for (int x = 0; x < s; ++x) {
-            // Stratified horizontal ledges + vertical fractures
-            int strataY = y / 8;
-            int offset = (strataY & 1) * 7;
-            float cellN = PixelCanvas::fbm2D((x + offset) * 0.16f, y * 0.22f, 3, seed);
-            bool isHorizontalSeam = (y % 8 == 0) || (y % 8 == 7 && cellN < 0.48f);
-            bool isVerticalCrack  = ((x + offset + static_cast<int>(cellN * 6.0f)) % 16 == 0);
+            // Check for top overhanging grass lip (rows 0..12)
+            // Creates the signature organic HD-2D moss/grass fringe hanging over cliff faces
+            float fringeNoise = PixelCanvas::fbm2D(x * 0.18f, 0.0f, 2, seed + 888u);
+            int fringeBottom = 5 + static_cast<int>(fringeNoise * 6.0f);
 
-            if (isHorizontalSeam || isVerticalCrack) {
-                c.setPixel(x, y, crevice, 0.10f);
+            if (y <= fringeBottom) {
+                float n = PixelCanvas::fbm2D(x * 0.22f, y * 0.22f, 2, seed) + PixelCanvas::bayer4x4(x, y) * 0.15f;
+                RGBA8 col = (y <= 2) ? mossMid : ((n < 0.38f) ? mossDark : ((n > 0.65f) ? mossGold : mossLight));
+                float h = 0.85f - static_cast<float>(y) * 0.035f;
+                c.setPixel(x, y, col, h);
+            } else if (y == fringeBottom + 1) {
+                // Dark contact shadow cast by the overhanging grass fringe onto the stone below
+                c.setPixel(x, y, crevice, 0.15f);
             } else {
-                float dither = PixelCanvas::bayer4x4(x, y) * 0.10f;
-                float val = cellN + ((y % 8 == 1) ? 0.18f : 0.0f) + dither;
-                RGBA8 col = (val < 0.42f) ? darkRock : ((val < 0.68f) ? midRock : warmHigh);
-                c.setPixel(x, y, col, std::clamp(0.35f + val * 0.55f, 0.2f, 0.95f));
+                // Stratified horizontal ledges + vertical fractures
+                int strataY = (y - fringeBottom) / 8;
+                int offset = (strataY & 1) * 7;
+                float cellN = PixelCanvas::fbm2D((x + offset) * 0.16f, y * 0.22f, 3, seed);
+                bool isHorizontalSeam = (y % 8 == 0) || (y % 8 == 7 && cellN < 0.48f);
+                bool isVerticalCrack  = ((x + offset + static_cast<int>(cellN * 6.0f)) % 16 == 0);
+
+                if (isHorizontalSeam || isVerticalCrack) {
+                    c.setPixel(x, y, crevice, 0.10f);
+                } else {
+                    float dither = PixelCanvas::bayer4x4(x, y) * 0.10f;
+                    float val = cellN + ((y % 8 == 1) ? 0.18f : 0.0f) + dither;
+                    RGBA8 col = (val < 0.42f) ? darkRock : ((val < 0.68f) ? midRock : warmHigh);
+                    c.setPixel(x, y, col, std::clamp(0.35f + val * 0.55f, 0.2f, 0.95f));
+                }
             }
         }
     }
@@ -297,21 +334,49 @@ void generateCobblestoneTile(PixelCanvas& c, uint32_t seed) {
 
 void generateDirtPathTile(PixelCanvas& c, uint32_t seed) {
     const int s = static_cast<int>(c.width());
-    RGBA8 darkEarth{102, 74, 52, 255};
-    RGBA8 midEarth{134, 98, 68, 255};
-    RGBA8 warmSand{164, 124, 88, 255};
+    RGBA8 deepLoam{44, 38, 32, 255};
+    RGBA8 darkEarth{64, 56, 46, 255};
+    RGBA8 midEarth{92, 82, 68, 255};
+    RGBA8 warmGrit{126, 114, 96, 255};
+    RGBA8 lightGravel{162, 150, 134, 255};
+    RGBA8 mossFlecks{58, 82, 42, 255};
+
     for (int y = 0; y < s; ++y) {
         for (int x = 0; x < s; ++x) {
-            float n = PixelCanvas::fbm2D(x * 0.15f, y * 0.15f, 3, seed) + PixelCanvas::bayer4x4(x, y) * 0.10f;
-            RGBA8 col = (n < 0.40f) ? darkEarth : ((n < 0.68f) ? midEarth : warmSand);
-            c.setPixel(x, y, col, 0.35f + n * 0.35f);
+            float n = PixelCanvas::fbm2D(x * 0.16f, y * 0.16f, 3, seed) + PixelCanvas::bayer4x4(x, y) * 0.10f;
+            RGBA8 col = (n < 0.28f) ? deepLoam : ((n < 0.55f) ? darkEarth : ((n < 0.80f) ? midEarth : warmGrit));
+            // Moss encroaching on shaded soil patches
+            float mossN = PixelCanvas::fbm2D(x * 0.22f, y * 0.22f, 2, seed + 404u);
+            if (mossN > 0.68f) {
+                col = mossFlecks;
+            }
+            c.setPixel(x, y, col, 0.32f + n * 0.38f);
         }
     }
-    // Small pebbles
-    for (int i = 0; i < 24; ++i) {
-        int px = static_cast<int>(PixelCanvas::hash2D(i, 10, seed) * s);
-        int py = static_cast<int>(PixelCanvas::hash2D(i, 20, seed) * s);
-        c.fillRect(px, py, 2, 2, RGBA8{152, 144, 136, 255}, 0.78f);
+
+    // Dense embedded river gravel & smooth rounded pebbles (Octopath woodland path look)
+    for (int i = 0; i < 75; ++i) {
+        int px = static_cast<int>(PixelCanvas::hash2D(i, 11, seed) * s);
+        int py = static_cast<int>(PixelCanvas::hash2D(i, 23, seed) * s);
+        int pSize = (i % 6 == 0) ? 3 : ((i % 2 == 0) ? 2 : 1);
+        RGBA8 pBase = (i % 3 == 0) ? lightGravel : ((i % 3 == 1) ? warmGrit : RGBA8{142, 136, 126, 255});
+        RGBA8 pShadow = deepLoam;
+        RGBA8 pHigh = RGBA8{196, 188, 174, 255};
+
+        for (int dy = 0; dy < pSize; ++dy) {
+            for (int dx = 0; dx < pSize; ++dx) {
+                RGBA8 pc = pBase;
+                float ph = 0.72f;
+                if (dx == 0 && dy == 0) {
+                    pc = pHigh;
+                    ph = 0.88f;
+                } else if (dx == pSize - 1 && dy == pSize - 1) {
+                    pc = pShadow;
+                    ph = 0.40f;
+                }
+                c.setPixelWrapped(px + dx, py + dy, pc, ph);
+            }
+        }
     }
 }
 
@@ -443,20 +508,164 @@ void generateWindowWarmGlowTile(PixelCanvas& c) {
 
 void generateWaterSurfaceTile(PixelCanvas& c, uint32_t seed) {
     const int s = static_cast<int>(c.width());
-    RGBA8 deepTeal{28, 86, 114, 225};
-    RGBA8 midAqua{48, 132, 158, 225};
-    RGBA8 causticFoam{176, 234, 246, 245};
+    RGBA8 deepAzure{22, 74, 118, 235};
+    RGBA8 midTurquoise{42, 138, 168, 235};
+    RGBA8 lightAquamarine{86, 196, 218, 245};
+    RGBA8 causticHighlight{210, 246, 255, 255};
 
     for (int y = 0; y < s; ++y) {
         for (int x = 0; x < s; ++x) {
-            float w1 = PixelCanvas::fbm2D(x * 0.14f, y * 0.14f, 3, seed);
-            float w2 = PixelCanvas::fbm2D((x + 17) * 0.18f, (y - 11) * 0.18f, 2, seed + 55u);
-            float ridge = 1.0f - std::abs(w1 - w2) * 3.2f;
-            if (ridge > 0.78f) {
-                c.setPixel(x, y, causticFoam, 0.85f, 40);
-            } else {
-                c.setPixel(x, y, PixelCanvas::lerpColor(deepTeal, midAqua, w1), 0.35f + w1 * 0.40f, 0);
+            float w1 = PixelCanvas::fbm2D(x * 0.15f, y * 0.15f, 3, seed);
+            float w2 = PixelCanvas::fbm2D((x + 23) * 0.20f, (y - 17) * 0.20f, 3, seed + 99u);
+            float causticRidge = 1.0f - std::abs(w1 - w2) * 3.0f;
+            float h = 0.40f + w1 * 0.35f;
+            uint8_t emiss = 0;
+
+            RGBA8 col = PixelCanvas::lerpColor(deepAzure, midTurquoise, w1);
+            if (causticRidge > 0.72f) {
+                float t = (causticRidge - 0.72f) / 0.28f;
+                col = PixelCanvas::lerpColor(lightAquamarine, causticHighlight, t);
+                h = 0.75f + t * 0.20f;
+                emiss = static_cast<uint8_t>(t * 55.0f);
             }
+            c.setPixel(x, y, col, h, emiss);
+        }
+    }
+}
+
+void generateSandShoreTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    RGBA8 sandBase{226, 194, 144, 255};
+    RGBA8 sandLight{246, 222, 176, 255};
+    RGBA8 sandWet{192, 158, 116, 255};
+    RGBA8 shellMica{255, 250, 236, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n1 = PixelCanvas::fbm2D(x * 0.12f, y * 0.12f, 3, seed);
+            // Wave wash ripple marks running diagonally
+            float waveRipple = std::sin((x * 0.45f + y * 0.25f) + n1 * 4.2f) * 0.5f + 0.5f;
+            RGBA8 col = PixelCanvas::lerpColor(sandWet, sandBase, n1);
+            col = PixelCanvas::lerpColor(col, sandLight, waveRipple * 0.65f);
+
+            // Sparkling shell / quartz grains
+            float spark = PixelCanvas::hash2D(x, y, seed + 888u);
+            float h = 0.45f + waveRipple * 0.25f;
+            uint8_t emiss = 0;
+            if (spark > 0.965f) {
+                col = shellMica;
+                h = 0.90f;
+                emiss = 35;
+            }
+            c.setPixel(x, y, col, h, emiss);
+        }
+    }
+}
+
+void generateCoastalCliffStoneTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    RGBA8 rockDeep{68, 60, 52, 255};
+    RGBA8 rockMid{124, 114, 102, 255};
+    RGBA8 rockLight{168, 156, 140, 255};
+    RGBA8 calciumWhite{206, 198, 184, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            // Horizontal sedimentary bedding planes
+            float n = PixelCanvas::fbm2D(x * 0.08f, y * 0.32f, 3, seed);
+            float strataPhase = (y * 0.55f) + n * 3.5f;
+            float strataLedge = std::sin(strataPhase) * 0.5f + 0.5f;
+            float fissure = std::pow(strataLedge, 6.0f);
+
+            RGBA8 col = PixelCanvas::lerpColor(rockMid, rockLight, strataLedge);
+            if (fissure > 0.75f) {
+                col = rockDeep;
+            } else if (strataLedge > 0.88f) {
+                col = calciumWhite;
+            }
+            float h = 0.35f + strataLedge * 0.55f - (fissure > 0.75f ? 0.30f : 0.0f);
+            c.setPixel(x, y, col, h, 0);
+        }
+    }
+}
+
+void generateCoastalScreeTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    RGBA8 groundBase{134, 126, 114, 255};
+    RGBA8 pebbleLight{172, 162, 148, 255};
+    RGBA8 crackDark{78, 70, 62, 255};
+    RGBA8 sproutGreen{78, 144, 52, 255};
+    RGBA8 sproutTip{132, 202, 74, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n = PixelCanvas::fbm2D(x * 0.20f, y * 0.20f, 3, seed);
+            float pebbleNoise = PixelCanvas::valueNoise2D(x * 0.45f, y * 0.45f, seed + 123u);
+            RGBA8 col = PixelCanvas::lerpColor(crackDark, groundBase, n);
+            if (pebbleNoise > 0.65f) {
+                col = pebbleLight;
+            }
+            float h = 0.45f + n * 0.35f;
+
+            // Tiny wild coastal sprouts & grass sprigs poking out of crevices
+            float sproutH = PixelCanvas::hash2D(x, y, seed + 505u);
+            if (sproutH > 0.94f) {
+                col = (sproutH > 0.975f) ? sproutTip : sproutGreen;
+                h = 0.85f;
+            }
+            c.setPixel(x, y, col, h, 0);
+        }
+    }
+}
+
+void generatePalmFrondsTile(PixelCanvas& c, uint32_t seed) {
+    (void)seed;
+    const int s = static_cast<int>(c.width());
+    RGBA8 emeraldDeep{34, 82, 38, 255};
+    RGBA8 emeraldMid{64, 138, 52, 255};
+    RGBA8 sunnyTip{112, 194, 68, 255};
+    RGBA8 rachisGold{158, 184, 68, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            int distRachis = std::abs(x - 32);
+            float leaflet = std::sin((distRachis * 1.8f - y * 1.2f)) * 0.5f + 0.5f;
+
+            RGBA8 col = PixelCanvas::lerpColor(emeraldDeep, emeraldMid, leaflet);
+            if (leaflet > 0.75f) {
+                col = PixelCanvas::lerpColor(col, sunnyTip, (leaflet - 0.75f) * 4.0f);
+            }
+            if (distRachis <= 2) {
+                col = rachisGold;
+            }
+            float h = 0.50f + leaflet * 0.40f;
+            c.setPixel(x, y, col, h, 0);
+        }
+    }
+}
+
+void generatePalmBarkTile(PixelCanvas& c, uint32_t seed) {
+    (void)seed;
+    const int s = static_cast<int>(c.width());
+    RGBA8 barkBase{138, 98, 64, 255};
+    RGBA8 ringRidge{174, 132, 88, 255};
+    RGBA8 ringGroove{78, 52, 34, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float ringPhase = static_cast<float>(y % 8) / 8.0f;
+            float ringShape = std::sin(ringPhase * 3.14159f);
+
+            RGBA8 col = barkBase;
+            float h = 0.50f;
+            if (ringPhase < 0.20f) {
+                col = ringGroove;
+                h = 0.20f;
+            } else if (ringShape > 0.65f) {
+                col = PixelCanvas::lerpColor(barkBase, ringRidge, (ringShape - 0.65f) * 2.8f);
+                h = 0.85f;
+            }
+            c.setPixel(x, y, col, h, 0);
         }
     }
 }
@@ -609,13 +818,230 @@ void generateWolfMonsterSprite(PixelCanvas& c) {
     finalizeSpriteBevelAndOutline(c);
 }
 
+void generatePineFoliageTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    // Authentic Octopath-style rich mossy evergreen conifer palette
+    RGBA8 deepCrevice{20, 36, 22, 255};
+    RGBA8 needleShadow{30, 52, 28, 255};
+    RGBA8 needleMid{46, 78, 40, 255};
+    RGBA8 needleFresh{72, 114, 54, 255};
+    RGBA8 needleTip{118, 154, 76, 255};
+    RGBA8 barkTwig{58, 42, 28, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            // Layered conifer bough texture with downward radiating needle tufts
+            float n0 = PixelCanvas::fbm2D(x * 0.16f, y * 0.16f, 3, seed);
+            float dither = PixelCanvas::bayer4x4(x, y) * 0.12f;
+            float val = n0 + dither;
+
+            // Tiered horizontal foliage clumps every 12 pixels
+            float boughPhase = std::fmod(static_cast<float>(y) + std::sin(static_cast<float>(x) * 0.35f) * 2.5f, 12.0f);
+            float boughT = boughPhase / 12.0f; // 0 at top of tier, 1 at bottom needle tips
+
+            RGBA8 col = needleMid;
+            float h = 0.55f;
+
+            if (boughT < 0.18f) {
+                // Deep shadowed crevice between foliage tiers
+                col = (val < 0.45f) ? deepCrevice : needleShadow;
+                h = 0.28f + val * 0.12f;
+            } else if (boughT > 0.78f) {
+                // Outward-reaching needle tips
+                col = (val > 0.55f) ? needleTip : needleFresh;
+                h = 0.72f + val * 0.18f;
+            } else {
+                // Dense mid-foliage needle body
+                col = (val < 0.38f) ? needleShadow : ((val > 0.68f) ? needleFresh : needleMid);
+                h = 0.46f + val * 0.30f;
+            }
+
+            // Fine wooden twig accents embedded in the branch interior
+            if (boughT < 0.25f && std::abs(x % 16 - 8) <= 1 && val > 0.62f) {
+                col = barkTwig;
+                h = 0.32f;
+            }
+
+            c.setPixel(x, y, col, h, 0);
+        }
+    }
+
+    // Crisp pixel-art needle strokes
+    for (int i = 0; i < 120; ++i) {
+        int nx = static_cast<int>(PixelCanvas::hash2D(i, 11, seed) * s);
+        int ny = static_cast<int>(PixelCanvas::hash2D(i, 23, seed) * s);
+        int len = 2 + (i % 2);
+        RGBA8 tipCol = (i % 2 == 0) ? needleFresh : needleTip;
+        for (int l = 0; l < len; ++l) {
+            int py = (ny + l) % s;
+            int px = (nx + (l % 2)) % s;
+            c.setPixel(px, py, tipCol, 0.75f + static_cast<float>(l) * 0.05f, 0);
+        }
+    }
+}
+
+void generateOakFoliageTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    // Authentic Octopath-style rich broadleaf oak / deciduous canopy palette
+    RGBA8 deepCrevice{24, 40, 20, 255};
+    RGBA8 leafShadow{36, 62, 30, 255};
+    RGBA8 leafMid{56, 96, 44, 255};
+    RGBA8 leafFresh{82, 138, 58, 255};
+    RGBA8 leafSunlit{126, 172, 74, 255};
+    RGBA8 leafHighlight{168, 198, 92, 255};
+    RGBA8 twigBark{62, 44, 28, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n0 = PixelCanvas::fbm2D(x * 0.12f, y * 0.12f, 3, seed);
+            float dither = PixelCanvas::bayer4x4(x, y) * 0.12f;
+            float val = n0 + dither;
+
+            // Clustered scalloped leaf puffs
+            float puffWave = std::sin(static_cast<float>(x) * 0.42f) * 1.8f +
+                             std::cos(static_cast<float>(y) * 0.38f) * 1.8f;
+            float puffPhase = std::fmod(static_cast<float>(x + y * 2) + puffWave + 64.0f, 14.0f) / 14.0f;
+
+            RGBA8 col = leafMid;
+            float h = 0.55f;
+
+            if (val < 0.32f || puffPhase < 0.14f) {
+                col = (val < 0.22f) ? deepCrevice : leafShadow;
+                h = 0.26f + val * 0.15f;
+            } else if (val > 0.72f && puffPhase > 0.65f) {
+                col = (val > 0.82f) ? leafHighlight : leafSunlit;
+                h = 0.78f + val * 0.16f;
+            } else if (val > 0.52f) {
+                col = (puffPhase > 0.50f) ? leafSunlit : leafFresh;
+                h = 0.58f + val * 0.20f;
+            } else {
+                col = (puffPhase < 0.35f) ? leafShadow : leafMid;
+                h = 0.42f + val * 0.25f;
+            }
+
+            if (puffPhase < 0.08f && (x % 16 == 0 || y % 16 == 0) && val < 0.28f) {
+                col = twigBark;
+                h = 0.22f;
+            }
+
+            c.setPixel(x, y, col, std::clamp(h, 0.15f, 0.98f), 0);
+        }
+    }
+
+    // Leaf cluster micro-details (dappled sunlight spots)
+    for (int i = 0; i < 90; ++i) {
+        int nx = static_cast<int>(PixelCanvas::hash2D(i, 13, seed) * s);
+        int ny = static_cast<int>(PixelCanvas::hash2D(i, 29, seed) * s);
+        RGBA8 col = (i % 3 == 0) ? leafHighlight : ((i % 3 == 1) ? leafSunlit : deepCrevice);
+        float h = (i % 3 == 2) ? 0.25f : 0.82f;
+        c.setPixel(nx % s, ny % s, col, h, 0);
+        c.setPixel((nx + 1) % s, ny % s, col, h, 0);
+        c.setPixel(nx % s, (ny + 1) % s, col, h, 0);
+    }
+}
+
+void generateSnowPineFoliageTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    // Two-tone snow-draped conifer needle bough palette
+    RGBA8 deepCrevice{22, 38, 26, 255};
+    RGBA8 needleShadow{32, 56, 36, 255};
+    RGBA8 needleMid{48, 80, 48, 255};
+    RGBA8 snowIceBlue{195, 218, 238, 255};
+    RGBA8 snowPureWhite{245, 250, 255, 255};
+    RGBA8 snowCrust{218, 234, 248, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n0 = PixelCanvas::fbm2D(x * 0.16f, y * 0.16f, 3, seed);
+            float dither = PixelCanvas::bayer4x4(x, y) * 0.10f;
+            float val = n0 + dither;
+
+            float boughPhase = std::fmod(static_cast<float>(y) + std::sin(static_cast<float>(x) * 0.35f) * 2.5f, 12.0f);
+            float boughT = boughPhase / 12.0f;
+
+            RGBA8 col = needleMid;
+            float h = 0.55f;
+
+            if (boughT < 0.48f) {
+                // Heavy snow blanket resting on top of the branch tier
+                if (boughT < 0.15f) {
+                    col = snowCrust;
+                    h = 0.70f + val * 0.15f;
+                } else if (val > 0.42f) {
+                    col = snowPureWhite;
+                    h = 0.85f + val * 0.12f;
+                } else {
+                    col = snowIceBlue;
+                    h = 0.75f + val * 0.15f;
+                }
+            } else if (boughT > 0.82f) {
+                // Needle tips peeking out below the snow bank
+                col = (val > 0.50f) ? needleMid : needleShadow;
+                h = 0.42f + val * 0.20f;
+            } else {
+                col = (val > 0.60f) ? snowIceBlue : deepCrevice;
+                h = 0.50f + val * 0.20f;
+            }
+
+            c.setPixel(x, y, col, std::clamp(h, 0.20f, 0.98f), 0);
+        }
+    }
+}
+
+void generateAutumnFoliageTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    // Warm golden hour autumn palette (amber, pumpkin gold, scarlet accents)
+    RGBA8 deepCrevice{46, 26, 18, 255};
+    RGBA8 amberShadow{92, 48, 22, 255};
+    RGBA8 amberMid{168, 92, 32, 255};
+    RGBA8 goldenOrange{218, 142, 42, 255};
+    RGBA8 brightGold{248, 196, 68, 255};
+    RGBA8 crimsonAccent{182, 54, 38, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n0 = PixelCanvas::fbm2D(x * 0.12f, y * 0.12f, 3, seed);
+            float dither = PixelCanvas::bayer4x4(x, y) * 0.12f;
+            float val = n0 + dither;
+
+            float puffWave = std::sin(static_cast<float>(x) * 0.42f) * 1.8f +
+                             std::cos(static_cast<float>(y) * 0.38f) * 1.8f;
+            float puffPhase = std::fmod(static_cast<float>(x + y * 2) + puffWave + 64.0f, 14.0f) / 14.0f;
+
+            RGBA8 col = amberMid;
+            float h = 0.55f;
+
+            if (val < 0.28f || puffPhase < 0.12f) {
+                col = (val < 0.18f) ? deepCrevice : amberShadow;
+                h = 0.28f + val * 0.14f;
+            } else if (val > 0.70f && puffPhase > 0.60f) {
+                col = (val > 0.82f) ? brightGold : goldenOrange;
+                h = 0.80f + val * 0.15f;
+            } else if (val > 0.48f) {
+                col = (puffPhase > 0.50f) ? goldenOrange : amberMid;
+                h = 0.58f + val * 0.20f;
+            } else {
+                col = (puffPhase < 0.32f) ? amberShadow : amberMid;
+                h = 0.40f + val * 0.22f;
+            }
+
+            if (val > 0.58f && puffPhase > 0.38f && puffPhase < 0.48f) {
+                col = crimsonAccent;
+            }
+
+            c.setPixel(x, y, col, std::clamp(h, 0.18f, 0.98f), 0);
+        }
+    }
+}
+
 void generatePineTreeSprite(PixelCanvas& c, uint32_t seed) {
     c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
-    RGBA8 trunkDark{68, 42, 26, 255};
-    RGBA8 trunkLight{98, 62, 38, 255};
-    RGBA8 needleShadow{26, 58, 42, 255};
-    RGBA8 needleMid{42, 92, 58, 255};
-    RGBA8 needleSun{76, 136, 78, 255};
+    RGBA8 trunkDark{58, 36, 22, 255};
+    RGBA8 trunkLight{88, 56, 34, 255};
+    RGBA8 needleShadow{20, 48, 34, 255};
+    RGBA8 needleMid{38, 86, 52, 255};
+    RGBA8 needleSun{72, 134, 74, 255};
+    RGBA8 needleRimLight{156, 204, 102, 255}; // Warm golden backlight rim on conifer bough tips
 
     // Sturdy trunk at bottom center
     c.fillRect(28, 46, 8, 17, trunkDark, 0.65f);
@@ -635,12 +1061,17 @@ void generatePineTreeSprite(PixelCanvas& c, uint32_t seed) {
                 float n = PixelCanvas::hash2D(px, py, seed + t * 17u) + PixelCanvas::bayer4x4(px, py) * 0.20f;
                 if (std::abs(dx) > span - 2 && n < 0.35f) continue; // Serrated bough silhouette
                 float dome = 1.0f - (static_cast<float>(dx * dx) / std::max(1.0f, static_cast<float>(span * span))) * 0.65f;
-                RGBA8 col = (dy > 1 || n < 0.32f) ? needleShadow : ((dy < -tr.h / 2 && n > 0.55f) ? needleSun : needleMid);
+
+                // Backlight rim highlight on upper-left edges (dx < 0, dy < -tr.h/3)
+                bool isRimEdge = (dx < -span + 3 || (dy < -tr.h + 3 && dx < 0));
+                RGBA8 col = isRimEdge ? needleRimLight :
+                            ((dy > 1 || n < 0.32f) ? needleShadow :
+                            ((dy < -tr.h / 2 && n > 0.55f) ? needleSun : needleMid));
                 c.setPixel(px, py, col, std::clamp(0.35f + dome * 0.60f, 0.25f, 0.98f));
             }
         }
     }
-    finalizeSpriteBevelAndOutline(c, RGBA8{16, 28, 20, 255});
+    finalizeSpriteBevelAndOutline(c, RGBA8{14, 26, 18, 255});
 }
 
 void generateOakTreeSprite(PixelCanvas& c, uint32_t seed) {
@@ -682,24 +1113,366 @@ void generateOakTreeSprite(PixelCanvas& c, uint32_t seed) {
     finalizeSpriteBevelAndOutline(c, RGBA8{22, 30, 18, 255});
 }
 
-void generateWildflowerSprite(PixelCanvas& c, uint32_t seed) {
+void generateWildflowerSprite(PixelCanvas& c, uint32_t /*seed*/) {
     c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
-    RGBA8 stemDark{38, 86, 44, 255};
-    RGBA8 stemLight{68, 134, 62, 255};
-    for (int i = 0; i < 14; ++i) {
-        int bx = 14 + i * 3;
-        int h = 14 + static_cast<int>(PixelCanvas::hash2D(i, 1, seed) * 16.0f);
-        for (int dy = 0; dy < h; ++dy) {
-            int sway = (dy > h / 2) ? ((i & 1) ? 1 : -1) : 0;
-            c.setPixel(bx + sway, 61 - dy, (dy > h / 2) ? stemLight : stemDark, 0.70f);
-        }
-        if (i % 2 == 0) {
-            RGBA8 petal = (i % 4 == 0) ? RGBA8{246, 198, 68, 255} : RGBA8{238, 104, 136, 255};
-            c.fillCircle(bx, 61 - h, 3, petal, 0.92f, 0.55f);
-            c.setPixel(bx, 61 - h, RGBA8{255, 248, 210, 255}, 0.98f);
+    RGBA8 fernDark{24, 62, 32, 255};
+    RGBA8 fernMid{44, 102, 48, 255};
+    RGBA8 fernLight{76, 148, 68, 255};
+    RGBA8 fernTip{128, 186, 88, 255};
+
+    // Radiating woodland star-fern fronds
+    const float angles[7] = {-1.35f, -0.92f, -0.45f, 0.0f, 0.45f, 0.92f, 1.35f};
+    for (int i = 0; i < 7; ++i) {
+        float a = angles[i] - 1.5708f; // Radiate upward from center base (32, 54)
+        int len = 14 + (i % 2 == 0 ? 4 : 0);
+        for (int step = 0; step < len; ++step) {
+            float dist = static_cast<float>(step);
+            float arch = std::sin(dist / static_cast<float>(len) * 3.14159f) * 2.5f * (i < 3 ? -1.0f : 1.0f);
+            int px = 32 + static_cast<int>(std::cos(a) * dist + arch);
+            int py = 54 + static_cast<int>(std::sin(a) * dist);
+
+            float t = dist / static_cast<float>(len);
+            RGBA8 col = (t > 0.75f) ? fernTip : ((t > 0.40f) ? fernLight : ((t > 0.15f) ? fernMid : fernDark));
+            c.setPixel(px, py, col, 0.85f - t * 0.35f);
+            // Leaflet side-serrations
+            if (step > 4 && step % 2 == 0) {
+                c.setPixel(px - 1, py, fernMid, 0.65f);
+                c.setPixel(px + 1, py, fernLight, 0.75f);
+            }
         }
     }
-    finalizeSpriteBevelAndOutline(c, RGBA8{18, 34, 20, 255});
+    // Small moss boulder beside the fern
+    RGBA8 rockDark{54, 52, 60, 255};
+    RGBA8 rockMoss{82, 126, 60, 255};
+    c.fillCircle(18, 54, 6, rockDark, 0.75f, 0.35f);
+    c.fillCircle(18, 51, 4, rockMoss, 0.88f, 0.55f);
+
+    // Delicate woodland blossom stars blooming on the fern fronds
+    RGBA8 petalWhite{252, 248, 240, 255};
+    RGBA8 petalBlush{246, 178, 196, 255};
+    RGBA8 flowerCenter{255, 218, 72, 255};
+
+    struct BlossomDot { int x; int y; };
+    const BlossomDot dots[4] = {{27, 43}, {36, 40}, {39, 48}, {24, 49}};
+    for (const auto& b : dots) {
+        c.setPixel(b.x, b.y, flowerCenter, 0.95f);
+        c.setPixel(b.x - 1, b.y, petalWhite, 0.90f);
+        c.setPixel(b.x + 1, b.y, petalWhite, 0.90f);
+        c.setPixel(b.x, b.y - 1, petalBlush, 0.90f);
+        c.setPixel(b.x, b.y + 1, petalBlush, 0.90f);
+    }
+
+    finalizeSpriteBevelAndOutline(c, RGBA8{16, 28, 18, 255});
+}
+
+void generateGrassTuftSprite(PixelCanvas& c, uint32_t seed) {
+    (void)seed;
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+
+    RGBA8 bladeDeep{22, 46, 18, 255};
+    RGBA8 bladeMid{48, 108, 38, 255};
+    RGBA8 bladeLight{98, 178, 54, 255};
+    RGBA8 bladeTip{188, 224, 78, 255};
+
+    // Base root clump
+    c.fillCircle(32, 58, 5, bladeDeep, 0.55f, 0.20f);
+
+    // Dense fan of 11 grass blades with organic curves and varied heights
+    struct BladeDef {
+        float startAngle;
+        int length;
+        float curvature;
+        int thickness;
+    };
+
+    const BladeDef blades[11] = {
+        {-1.15f, 15, -1.8f, 1},
+        {-0.85f, 21, -2.5f, 2},
+        {-0.55f, 26, -1.6f, 2},
+        {-0.28f, 31, -0.9f, 2},
+        {-0.08f, 34,  0.4f, 2},
+        { 0.12f, 32, -0.6f, 2},
+        { 0.35f, 29,  1.2f, 2},
+        { 0.62f, 24,  2.1f, 2},
+        { 0.90f, 19,  2.8f, 2},
+        { 1.18f, 14,  2.2f, 1},
+        {-0.42f, 18, -3.2f, 1},
+    };
+
+    for (int b = 0; b < 11; ++b) {
+        const auto& bl = blades[b];
+        float baseAngle = bl.startAngle - 1.5707963f;
+        int len = bl.length;
+
+        for (int step = 0; step < len; ++step) {
+            float t = static_cast<float>(step) / static_cast<float>(len);
+            float bend = std::sin(t * 1.5707963f) * bl.curvature * 4.0f;
+            float dist = static_cast<float>(step);
+
+            int px = 32 + static_cast<int>(std::cos(baseAngle) * dist + bend);
+            int py = 57 + static_cast<int>(std::sin(baseAngle) * dist);
+
+            RGBA8 col = (t > 0.82f) ? bladeTip : ((t > 0.50f) ? bladeLight : ((t > 0.20f) ? bladeMid : bladeDeep));
+            float h = 0.85f - t * 0.40f;
+
+            c.setPixel(px, py, col, h);
+            if (bl.thickness >= 2 && step < len - 3) {
+                int offsetDir = (bl.curvature < 0.0f) ? -1 : 1;
+                c.setPixel(px + offsetDir, py, (t > 0.6f) ? bladeLight : bladeMid, h * 0.9f);
+            }
+        }
+    }
+
+    // Small clover leaflet at the base
+    c.setPixel(28, 56, bladeLight, 0.70f);
+    c.setPixel(27, 56, bladeMid, 0.60f);
+    c.setPixel(36, 56, bladeLight, 0.70f);
+    c.setPixel(37, 56, bladeMid, 0.60f);
+
+    finalizeSpriteBevelAndOutline(c, RGBA8{16, 28, 14, 255});
+}
+
+void generateTallGrassSprite(PixelCanvas& c, uint32_t seed) {
+    (void)seed;
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+
+    RGBA8 stemDark{36, 68, 28, 255};
+    RGBA8 stemMid{68, 126, 48, 255};
+    RGBA8 stemLight{118, 182, 68, 255};
+    RGBA8 huskGold{218, 192, 116, 255};
+    RGBA8 huskAmber{182, 144, 72, 255};
+    RGBA8 huskTip{245, 230, 168, 255};
+
+    struct StemDef {
+        int baseX;
+        int height;
+        float lean;
+    };
+    const StemDef stems[4] = {
+        {26, 44, -3.8f},
+        {31, 50,  2.2f},
+        {35, 46,  4.5f},
+        {29, 36, -2.0f},
+    };
+
+    for (int s = 0; s < 4; ++s) {
+        const auto& st = stems[s];
+        int startY = 58;
+        for (int y = 0; y < st.height; ++y) {
+            float t = static_cast<float>(y) / static_cast<float>(st.height);
+            float sway = std::pow(t, 1.6f) * st.lean;
+            int px = st.baseX + static_cast<int>(sway);
+            int py = startY - y;
+
+            RGBA8 col = (t > 0.65f) ? stemLight : ((t > 0.25f) ? stemMid : stemDark);
+            c.setPixel(px, py, col, 0.80f - t * 0.30f);
+
+            // Drooping leaves along stem joints
+            if (y == st.height / 3 || y == (st.height * 2) / 3) {
+                int leafDir = (s % 2 == 0) ? -1 : 1;
+                for (int l = 1; l <= 5; ++l) {
+                    c.setPixel(px + l * leafDir, py + l / 2, stemMid, 0.65f);
+                }
+            }
+
+            // Feathery seed head at top (last 12 pixels)
+            if (y >= st.height - 12) {
+                float headT = static_cast<float>(y - (st.height - 12)) / 12.0f;
+                RGBA8 seedCol = (headT > 0.7f) ? huskTip : ((headT > 0.3f) ? huskGold : huskAmber);
+                c.setPixel(px - 1, py, seedCol, 0.90f);
+                c.setPixel(px + 1, py, seedCol, 0.85f);
+                if (y % 2 == 0) {
+                    c.setPixel(px - 2, py, huskAmber, 0.70f);
+                    c.setPixel(px + 2, py, huskGold, 0.75f);
+                }
+            }
+        }
+    }
+
+    finalizeSpriteBevelAndOutline(c, RGBA8{20, 28, 16, 255});
+}
+
+void generateWildflowerBouquetSprite(PixelCanvas& c, uint32_t type, uint32_t seed) {
+    (void)seed;
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+
+    RGBA8 stemDeep{28, 58, 26, 255};
+    RGBA8 stemMid{52, 114, 44, 255};
+    RGBA8 stemLight{96, 172, 60, 255};
+
+    // Base foliage rosette
+    for (int angleIdx = 0; angleIdx < 6; ++angleIdx) {
+        float a = static_cast<float>(angleIdx) * 1.047f - 1.57f;
+        for (int r = 0; r < 8; ++r) {
+            int lx = 32 + static_cast<int>(std::cos(a) * r);
+            int ly = 56 + static_cast<int>(std::sin(a) * r * 0.45f);
+            RGBA8 col = (r > 4) ? stemLight : ((r > 1) ? stemMid : stemDeep);
+            c.setPixel(lx, ly, col, 0.70f - static_cast<float>(r) * 0.04f);
+        }
+    }
+
+    struct FlowerPos {
+        int cx;
+        int cy;
+        int stemX0;
+        int stemY0;
+        int size;
+    };
+
+    if (type == 0) {
+        // Red Poppy / Scarlet Anemone Bouquet
+        const FlowerPos poppies[4] = {
+            {23, 34, 30, 56, 6},
+            {35, 27, 33, 56, 7},
+            {43, 37, 34, 56, 5},
+            {28, 44, 31, 56, 5},
+        };
+
+        RGBA8 petalDark{146, 20, 32, 255};
+        RGBA8 petalMid{212, 38, 48, 255};
+        RGBA8 petalBright{255, 68, 76, 255};
+        RGBA8 petalGlow{255, 126, 118, 255};
+        RGBA8 centerDark{32, 14, 22, 255};
+        RGBA8 centerGold{255, 224, 88, 255};
+
+        for (const auto& fl : poppies) {
+            for (int y = fl.cy + fl.size - 1; y <= fl.stemY0; ++y) {
+                float t = static_cast<float>(y - fl.cy) / static_cast<float>(fl.stemY0 - fl.cy);
+                int sx = fl.cx + static_cast<int>((fl.stemX0 - fl.cx) * t + std::sin(t * 3.14f) * 1.5f);
+                c.setPixel(sx, y, stemMid, 0.65f);
+            }
+
+            int r = fl.size;
+            c.fillCircle(fl.cx, fl.cy, r, petalMid, 0.90f, 0.40f);
+            c.fillCircle(fl.cx - 1, fl.cy - 1, r - 2, petalBright, 0.96f, 0.60f);
+            c.setPixel(fl.cx - 2, fl.cy - 2, petalGlow, 0.98f);
+            c.setPixel(fl.cx + 1, fl.cy - 2, petalGlow, 0.98f);
+            c.setPixel(fl.cx, fl.cy, centerDark, 0.75f);
+            c.setPixel(fl.cx + 1, fl.cy, centerDark, 0.75f);
+            c.setPixel(fl.cx, fl.cy + 1, petalDark, 0.70f);
+            c.setPixel(fl.cx - 1, fl.cy, centerGold, 0.85f);
+        }
+    } else if (type == 1) {
+        // Cerulean Bluebell / Forget-Me-Not Bouquet
+        const FlowerPos bells[5] = {
+            {22, 32, 29, 56, 5},
+            {32, 24, 32, 56, 6},
+            {42, 30, 34, 56, 5},
+            {26, 42, 30, 56, 4},
+            {38, 40, 33, 56, 5},
+        };
+
+        RGBA8 blueDeep{34, 64, 168, 255};
+        RGBA8 blueMid{64, 122, 235, 255};
+        RGBA8 blueLight{126, 178, 255, 255};
+        RGBA8 blueGlow{202, 224, 255, 255};
+        RGBA8 eyeWhite{252, 255, 242, 255};
+
+        for (const auto& fl : bells) {
+            for (int y = fl.cy + fl.size - 1; y <= fl.stemY0; ++y) {
+                float t = static_cast<float>(y - fl.cy) / static_cast<float>(fl.stemY0 - fl.cy);
+                int sx = fl.cx + static_cast<int>((fl.stemX0 - fl.cx) * t);
+                c.setPixel(sx, y, stemMid, 0.65f);
+            }
+
+            int r = fl.size;
+            c.fillCircle(fl.cx, fl.cy, r, blueMid, 0.88f, 0.40f);
+            c.fillCircle(fl.cx, fl.cy - 1, r - 2, blueLight, 0.95f, 0.60f);
+            c.setPixel(fl.cx - 1, fl.cy - 1, blueGlow, 0.98f);
+            c.setPixel(fl.cx, fl.cy, eyeWhite, 0.90f);
+            c.setPixel(fl.cx, fl.cy + 1, blueDeep, 0.70f);
+        }
+    } else {
+        // Sunny Golden Buttercup & Daisy Bouquet
+        const FlowerPos buttercups[5] = {
+            {24, 28, 30, 56, 6},
+            {34, 23, 32, 56, 7},
+            {43, 33, 35, 56, 5},
+            {26, 41, 30, 56, 5},
+            {37, 38, 33, 56, 6},
+        };
+
+        RGBA8 goldDark{196, 124, 18, 255};
+        RGBA8 goldMid{255, 196, 32, 255};
+        RGBA8 goldBright{255, 236, 78, 255};
+        RGBA8 goldGlow{255, 250, 164, 255};
+        RGBA8 daisyWhite{246, 248, 242, 255};
+
+        for (int i = 0; i < 5; ++i) {
+            const auto& fl = buttercups[i];
+            for (int y = fl.cy + fl.size - 1; y <= fl.stemY0; ++y) {
+                float t = static_cast<float>(y - fl.cy) / static_cast<float>(fl.stemY0 - fl.cy);
+                int sx = fl.cx + static_cast<int>((fl.stemX0 - fl.cx) * t);
+                c.setPixel(sx, y, stemMid, 0.65f);
+            }
+
+            int r = fl.size;
+            if (i == 1) {
+                c.fillCircle(fl.cx, fl.cy, r, daisyWhite, 0.90f, 0.45f);
+                c.fillCircle(fl.cx, fl.cy, 2, goldMid, 0.98f, 0.80f);
+                c.setPixel(fl.cx, fl.cy, goldDark, 0.95f);
+            } else {
+                c.fillCircle(fl.cx, fl.cy, r, goldMid, 0.90f, 0.45f);
+                c.fillCircle(fl.cx - 1, fl.cy - 1, r - 2, goldBright, 0.96f, 0.65f);
+                c.setPixel(fl.cx - 2, fl.cy - 2, goldGlow, 0.98f);
+                c.setPixel(fl.cx, fl.cy, goldDark, 0.85f);
+            }
+        }
+    }
+
+    finalizeSpriteBevelAndOutline(c, RGBA8{20, 26, 16, 255});
+}
+
+void generateCloverPatchSprite(PixelCanvas& c, uint32_t seed) {
+    (void)seed;
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+
+    RGBA8 leafDark{24, 64, 28, 255};
+    RGBA8 leafMid{46, 122, 52, 255};
+    RGBA8 leafLight{88, 186, 76, 255};
+    RGBA8 leafMark{144, 218, 122, 255};
+    RGBA8 flowerWhite{244, 246, 238, 255};
+    RGBA8 flowerPink{242, 196, 214, 255};
+
+    struct CloverCluster {
+        int cx;
+        int cy;
+        int radius;
+    };
+    const CloverCluster clovers[7] = {
+        {19, 52, 5},
+        {27, 48, 6},
+        {36, 47, 6},
+        {45, 51, 5},
+        {31, 54, 5},
+        {22, 44, 4},
+        {40, 43, 4},
+    };
+
+    for (const auto& cl : clovers) {
+        const float angles[3] = {-2.35f, -1.57f, -0.78f};
+        for (int i = 0; i < 3; ++i) {
+            int lx = cl.cx + static_cast<int>(std::cos(angles[i]) * (static_cast<float>(cl.radius) * 0.85f));
+            int ly = cl.cy + static_cast<int>(std::sin(angles[i]) * (static_cast<float>(cl.radius) * 0.85f));
+            c.fillCircle(lx, ly, cl.radius - 2, leafMid, 0.80f, 0.40f);
+            c.setPixel(lx, ly, leafLight, 0.85f);
+            c.setPixel(lx, ly - 1, leafMark, 0.90f);
+        }
+        c.setPixel(cl.cx, cl.cy, leafDark, 0.60f);
+    }
+
+    // 2 small fluffy white/pink clover flowers on thin stalks
+    c.setPixel(25, 43, leafMid, 0.65f);
+    c.setPixel(25, 42, leafMid, 0.65f);
+    c.fillCircle(25, 40, 2, flowerWhite, 0.92f, 0.60f);
+    c.setPixel(25, 39, flowerPink, 0.95f);
+
+    c.setPixel(38, 39, leafMid, 0.65f);
+    c.setPixel(38, 38, leafMid, 0.65f);
+    c.fillCircle(38, 36, 2, flowerWhite, 0.92f, 0.60f);
+    c.setPixel(38, 35, flowerPink, 0.95f);
+
+    finalizeSpriteBevelAndOutline(c, RGBA8{16, 28, 16, 255});
 }
 
 void generateTorchFlameSprite(PixelCanvas& c) {
@@ -713,6 +1486,415 @@ void generateTorchFlameSprite(PixelCanvas& c) {
     // Inner incandescent golden-white core
     c.fillCircle(32, 30, 6, RGBA8{255, 242, 156, 255}, 0.98f, 0.70f, 255);
     finalizeSpriteBevelAndOutline(c, RGBA8{120, 38, 14, 220});
+}
+
+void generatePalmTreeSprite(PixelCanvas& c, uint32_t seed) {
+    (void)seed;
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+    RGBA8 barkBase{138, 98, 64, 255};
+    RGBA8 barkRidge{174, 132, 88, 255};
+    RGBA8 barkDark{84, 56, 36, 255};
+    RGBA8 frondDeep{34, 82, 38, 255};
+    RGBA8 frondMid{64, 138, 52, 255};
+    RGBA8 frondLight{112, 194, 68, 255};
+    RGBA8 coconutCol{106, 74, 42, 255};
+
+    // Curved slender palm trunk leaning towards the right
+    // Ground at y = 58, Crown at (38, 22)
+    for (int y = 22; y <= 58; ++y) {
+        float t = static_cast<float>(58 - y) / 36.0f;
+        float cx = 26.0f + std::pow(t, 1.4f) * 12.0f;
+        int halfW = static_cast<int>(3.2f - t * 1.4f);
+        if (halfW < 1) halfW = 1;
+
+        bool isRing = (y % 4 == 0);
+        RGBA8 col = isRing ? barkRidge : ((y % 4 == 1) ? barkDark : barkBase);
+        c.fillRect(static_cast<int>(cx) - halfW, y, halfW * 2 + 1, 1, col, 0.75f - t * 0.15f);
+    }
+
+    // Coconut drupe cluster at crown
+    c.fillCircle(37, 24, 2, coconutCol, 0.92f, 0.6f);
+    c.fillCircle(40, 25, 2, coconutCol, 0.92f, 0.6f);
+    c.fillCircle(38, 26, 2, coconutCol, 0.90f, 0.6f);
+
+    // Radiating arched feather fronds
+    struct FrondArch {
+        float tipX;
+        float tipY;
+        float apexX;
+        float apexY;
+    };
+    const FrondArch fronds[] = {
+        { 10.0f, 32.0f, 22.0f, 16.0f },
+        {  8.0f, 22.0f, 20.0f, 12.0f },
+        { 16.0f, 12.0f, 28.0f,  8.0f },
+        { 32.0f,  7.0f, 36.0f,  5.0f },
+        { 48.0f,  9.0f, 44.0f,  6.0f },
+        { 58.0f, 18.0f, 50.0f, 12.0f },
+        { 60.0f, 28.0f, 52.0f, 18.0f },
+        { 54.0f, 36.0f, 48.0f, 26.0f }
+    };
+
+    float crownX = 38.0f;
+    float crownY = 22.0f;
+    for (const auto& fa : fronds) {
+        for (int step = 0; step <= 24; ++step) {
+            float u = static_cast<float>(step) / 24.0f;
+            float omt = 1.0f - u;
+            float px = omt * omt * crownX + 2.0f * omt * u * fa.apexX + u * u * fa.tipX;
+            float py = omt * omt * crownY + 2.0f * omt * u * fa.apexY + u * u * fa.tipY;
+
+            int ix = static_cast<int>(std::round(px));
+            int iy = static_cast<int>(std::round(py));
+            float spread = std::sin(u * 3.14159f) * 2.5f + 0.5f;
+
+            RGBA8 leafCol = (u > 0.7f) ? frondLight : ((u > 0.3f) ? frondMid : frondDeep);
+            int ispr = static_cast<int>(spread);
+            for (int dx = -ispr; dx <= ispr; ++dx) {
+                c.setPixel(ix + dx, iy, leafCol, 0.85f - u * 0.3f);
+            }
+        }
+    }
+
+    finalizeSpriteBevelAndOutline(c, RGBA8{22, 34, 18, 255});
+}
+
+void generateClericSprite(PixelCanvas& c) {
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+    RGBA8 ivoryRobe{194, 188, 178, 255};
+    RGBA8 goldTrim{214, 172, 64, 255};
+    RGBA8 mantleWhite{212, 208, 202, 255};
+    RGBA8 hairBlond{208, 176, 88, 255};
+    RGBA8 silverStaff{202, 214, 226, 255};
+    RGBA8 skinLight{238, 202, 174, 255};
+    RGBA8 eyeCol{44, 40, 52, 255};
+
+    // Boots / hem
+    c.fillRect(26, 49, 12, 11, ivoryRobe, 0.70f);
+    c.fillRect(26, 57, 12, 3, goldTrim, 0.75f);
+
+    // Flowing white mantle / cloak
+    c.fillCircle(32, 38, 14, mantleWhite, 0.75f, 0.30f);
+    c.fillRect(23, 28, 18, 20, ivoryRobe, 0.85f);
+    c.fillRect(23, 40, 18, 3, goldTrim, 0.90f);
+
+    // Cleric shoulder stole
+    c.fillRect(28, 27, 8, 15, goldTrim, 0.92f);
+    c.fillRect(30, 27, 4, 15, RGBA8{214, 82, 72, 255}, 0.94f);
+
+    // Head & face
+    c.fillCircle(32, 18, 8, skinLight, 0.92f, 0.45f);
+    c.fillRect(29, 18, 2, 4, eyeCol, 0.85f);
+    c.fillRect(34, 18, 2, 4, eyeCol, 0.85f);
+    c.setPixel(29, 18, RGBA8{255, 255, 255, 255}, 0.92f);
+    c.setPixel(34, 18, RGBA8{255, 255, 255, 255}, 0.92f);
+
+    // Hair & Holy Circlet
+    c.fillCircle(32, 13, 9, hairBlond, 0.95f, 0.50f);
+    c.fillRect(26, 14, 12, 2, goldTrim, 0.98f, 0);
+
+    // Prayer staff in hand
+    for (int y = 14; y <= 56; ++y) {
+        c.setPixel(44, y, silverStaff, 0.90f);
+    }
+    c.fillCircle(44, 12, 4, goldTrim, 0.98f, 0.6f, 0);
+
+    finalizeSpriteBevelAndOutline(c);
+}
+
+void generateScholarSprite(PixelCanvas& c) {
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+    RGBA8 coatIndigo{38, 48, 88, 255};
+    RGBA8 mantleViolet{78, 44, 98, 255};
+    RGBA8 bookLeather{152, 72, 46, 255};
+    RGBA8 bookGold{232, 192, 78, 255};
+    RGBA8 hairSilver{196, 204, 218, 255};
+    RGBA8 skinLight{246, 208, 178, 255};
+    RGBA8 eyeCol{34, 30, 42, 255};
+
+    // Dark shoes & robe base
+    c.fillRect(25, 49, 14, 11, coatIndigo, 0.70f);
+    c.fillRect(24, 28, 16, 22, coatIndigo, 0.85f);
+    c.fillRect(22, 27, 20, 7, mantleViolet, 0.88f);
+
+    // Leather satchel strap
+    for (int i = 0; i < 14; ++i) {
+        c.setPixel(25 + i, 28 + i, bookLeather, 0.92f);
+    }
+    c.fillRect(36, 38, 7, 8, bookLeather, 0.90f);
+
+    // Head & face
+    c.fillCircle(32, 18, 8, skinLight, 0.92f, 0.45f);
+    c.fillRect(28, 18, 2, 4, eyeCol, 0.85f);
+    c.fillRect(34, 18, 2, 4, eyeCol, 0.85f);
+    c.setPixel(27, 18, RGBA8{210, 225, 240, 255}, 0.95f);
+    c.setPixel(30, 18, RGBA8{210, 225, 240, 255}, 0.95f);
+    c.setPixel(33, 18, RGBA8{210, 225, 240, 255}, 0.95f);
+    c.setPixel(36, 18, RGBA8{210, 225, 240, 255}, 0.95f);
+
+    // Hair
+    c.fillCircle(32, 13, 9, hairSilver, 0.95f, 0.50f);
+
+    // Open grimoire in left hand
+    c.fillRect(16, 33, 8, 9, bookLeather, 0.95f);
+    c.fillRect(18, 34, 5, 7, RGBA8{248, 242, 224, 255}, 0.96f);
+    c.setPixel(20, 37, bookGold, 0.98f);
+
+    finalizeSpriteBevelAndOutline(c);
+}
+
+void generateDancerSprite(PixelCanvas& c) {
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+    RGBA8 rubyBodice{186, 42, 68, 255};
+    RGBA8 lilacSash{172, 108, 198, 255};
+    RGBA8 goldJewel{242, 196, 68, 255};
+    RGBA8 hairEbony{32, 26, 34, 255};
+    RGBA8 skinWarm{244, 198, 168, 255};
+    RGBA8 eyeCol{36, 28, 38, 255};
+
+    // Bare legs & dancer slippers with ribbon ties
+    c.fillRect(27, 47, 4, 13, skinWarm, 0.70f);
+    c.fillRect(34, 47, 4, 13, skinWarm, 0.70f);
+    c.fillRect(26, 57, 5, 3, rubyBodice, 0.75f);
+    c.fillRect(34, 57, 5, 3, rubyBodice, 0.75f);
+
+    // Flared festive dancer skirt & sash
+    c.fillCircle(32, 42, 11, lilacSash, 0.82f, 0.35f);
+    c.fillRect(25, 39, 14, 4, goldJewel, 0.90f);
+
+    // Bodice
+    c.fillRect(26, 29, 12, 10, rubyBodice, 0.88f);
+    c.fillRect(29, 30, 6, 4, goldJewel, 0.92f);
+
+    // Head & face
+    c.fillCircle(32, 18, 8, skinWarm, 0.92f, 0.45f);
+    c.fillRect(28, 18, 2, 4, eyeCol, 0.85f);
+    c.fillRect(34, 18, 2, 4, eyeCol, 0.85f);
+    c.setPixel(28, 18, RGBA8{255, 255, 255, 255}, 0.90f);
+    c.setPixel(34, 18, RGBA8{255, 255, 255, 255}, 0.90f);
+
+    // Flowing dark raven hair & flower pin
+    c.fillCircle(32, 13, 9, hairEbony, 0.95f, 0.50f);
+    c.fillRect(22, 14, 4, 16, hairEbony, 0.85f);
+    c.fillRect(38, 14, 5, 18, hairEbony, 0.85f);
+    c.fillCircle(24, 12, 3, RGBA8{248, 84, 112, 255}, 0.98f);
+    c.setPixel(24, 12, goldJewel, 0.99f);
+
+    // Gold arm bangles
+    c.fillRect(20, 33, 4, 2, goldJewel, 0.92f);
+    c.fillRect(40, 33, 4, 2, goldJewel, 0.92f);
+
+    finalizeSpriteBevelAndOutline(c);
+}
+
+void generateSnowFrostTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    RGBA8 snowBase{228, 238, 248, 255};      // Soft alpine shadow blue-white
+    RGBA8 snowHighlight{250, 253, 255, 255}; // Direct sunlit crystalline crust
+    RGBA8 snowIceGlint{255, 255, 255, 255};   // Glinting ice faceted quartz sparkle
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n0 = PixelCanvas::fbm2D(x * 0.14f, y * 0.14f, 3, seed);
+            float drift = std::sin((x * 0.35f - y * 0.18f) + n0 * 3.6f) * 0.5f + 0.5f;
+            float dither = PixelCanvas::bayer4x4(x, y) * 0.08f;
+            float val = std::clamp(n0 * 0.6f + drift * 0.4f + dither, 0.0f, 1.0f);
+
+            RGBA8 col = PixelCanvas::lerpColor(snowBase, snowHighlight, val);
+            float h = 0.55f + val * 0.35f;
+            uint8_t emiss = 0;
+
+            float spark = PixelCanvas::hash2D(x, y, seed + 919u);
+            if (spark > 0.968f) {
+                col = snowIceGlint;
+                h = 0.95f;
+                emiss = 40;
+            }
+            c.setPixel(x, y, col, h, emiss);
+        }
+    }
+}
+
+void generateDesertDuneTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    RGBA8 duneShadow{214, 152, 88, 255};    // Warm amber desert shadow
+    RGBA8 duneMid{238, 186, 116, 255};     // Sun-warmed golden sand
+    RGBA8 duneCrest{252, 218, 154, 255};   // Sun-bleached dune crest
+    RGBA8 quartzGrain{255, 245, 220, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n = PixelCanvas::fbm2D(x * 0.10f, y * 0.10f, 3, seed);
+            float ripple = std::sin((x * 0.48f + y * 0.22f) + n * 3.8f);
+            float rippleShape = (ripple > 0.0f) ? std::pow(ripple, 0.7f) : -std::pow(-ripple, 1.3f);
+            float t = rippleShape * 0.5f + 0.5f;
+
+            RGBA8 col = (t < 0.45f) ? PixelCanvas::lerpColor(duneShadow, duneMid, t / 0.45f)
+                                    : PixelCanvas::lerpColor(duneMid, duneCrest, (t - 0.45f) / 0.55f);
+            float h = 0.40f + t * 0.45f;
+            uint8_t emiss = 0;
+
+            float spark = PixelCanvas::hash2D(x, y, seed + 721u);
+            if (spark > 0.97f) {
+                col = quartzGrain;
+                h = 0.92f;
+                emiss = 25;
+            }
+            c.setPixel(x, y, col, h, emiss);
+        }
+    }
+}
+
+void generateSwampBogTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    RGBA8 deepPeat{34, 40, 26, 255};      // Dark wet peat mud
+    RGBA8 mossyMud{58, 70, 38, 255};      // Murky swamp moss
+    RGBA8 stagnantWater{24, 42, 34, 255};  // Puddle sheen
+    RGBA8 algaeGreen{78, 102, 44, 255};   // Brackish algae scum
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n0 = PixelCanvas::fbm2D(x * 0.12f, y * 0.12f, 3, seed);
+            float n1 = PixelCanvas::fbm2D(x * 0.25f, y * 0.25f, 2, seed + 333u);
+
+            RGBA8 col = PixelCanvas::lerpColor(deepPeat, mossyMud, n0);
+            float h = 0.30f + n0 * 0.35f;
+
+            if (n1 > 0.65f) {
+                col = PixelCanvas::lerpColor(col, algaeGreen, (n1 - 0.65f) / 0.35f);
+                h += 0.10f;
+            } else if (n0 < 0.25f) {
+                col = stagnantWater;
+                h = 0.15f;
+            }
+            c.setPixel(x, y, col, h, 0);
+        }
+    }
+}
+
+void generateScorchedAshTile(PixelCanvas& c, uint32_t seed) {
+    const int s = static_cast<int>(c.width());
+    RGBA8 basaltDark{26, 26, 30, 255};
+    RGBA8 ashGrey{62, 60, 66, 255};
+    RGBA8 charcoal{42, 40, 44, 255};
+    RGBA8 glowingEmber{255, 98, 28, 255};
+
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float n0 = PixelCanvas::fbm2D(x * 0.15f, y * 0.15f, 3, seed);
+            float n1 = PixelCanvas::fbm2D(x * 0.30f, y * 0.30f, 2, seed + 808u);
+
+            RGBA8 col = PixelCanvas::lerpColor(basaltDark, ashGrey, n0);
+            float h = 0.40f + n0 * 0.35f;
+            uint8_t emiss = 0;
+
+            float fissure = std::abs(n1 - 0.50f);
+            if (fissure < 0.045f) {
+                float intensity = 1.0f - fissure / 0.045f;
+                col = PixelCanvas::lerpColor(charcoal, glowingEmber, intensity);
+                emiss = static_cast<uint8_t>(intensity * 220.0f);
+                h = 0.20f;
+            }
+            c.setPixel(x, y, col, h, emiss);
+        }
+    }
+}
+
+void generateCactusSprite(PixelCanvas& c, uint32_t seed) {
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+    RGBA8 cactusDark{42, 92, 52, 255};
+    RGBA8 cactusMid{64, 134, 76, 255};
+    RGBA8 cactusLight{96, 178, 108, 255};
+    RGBA8 spineCol{244, 238, 172, 255};
+
+    for (int y = 14; y <= 60; ++y) {
+        for (int x = 28; x <= 36; ++x) {
+            float rx = static_cast<float>(x - 32) / 4.0f;
+            RGBA8 col = (rx < -0.2f) ? cactusLight : ((rx > 0.4f) ? cactusDark : cactusMid);
+            c.setPixel(x, y, col, 0.85f - std::abs(rx) * 0.3f);
+        }
+    }
+    c.fillCircle(32, 14, 4, cactusMid, 0.90f, 0.50f);
+
+    c.fillRect(20, 38, 9, 5, cactusMid, 0.80f);
+    c.fillRect(18, 24, 5, 18, cactusMid, 0.82f);
+    c.fillCircle(20, 24, 2, cactusLight, 0.88f, 0.50f);
+
+    c.fillRect(35, 30, 9, 5, cactusDark, 0.78f);
+    c.fillRect(41, 18, 5, 16, cactusDark, 0.80f);
+    c.fillCircle(43, 18, 2, cactusMid, 0.85f, 0.50f);
+
+    for (int y = 16; y <= 58; y += 4) {
+        c.setPixel(27, y, spineCol, 0.95f);
+        c.setPixel(37, y, spineCol, 0.95f);
+        if (y >= 26 && y <= 38) c.setPixel(17, y, spineCol, 0.95f);
+        if (y >= 20 && y <= 32) c.setPixel(46, y, spineCol, 0.95f);
+    }
+    finalizeSpriteBevelAndOutline(c, RGBA8{18, 38, 22, 255});
+}
+
+void generateDeadShrubSprite(PixelCanvas& c, uint32_t seed) {
+    c.clear(RGBA8{0, 0, 0, 0}, 0.0f, 0);
+    RGBA8 woodDark{78, 56, 38, 255};
+    RGBA8 woodMid{118, 88, 62, 255};
+    RGBA8 woodLight{164, 130, 96, 255};
+
+    struct BranchDef { int x0, y0, x1, y1, x2, y2; };
+    const BranchDef branches[8] = {
+        {32, 58, 26, 48, 16, 42},
+        {32, 58, 24, 44, 20, 32},
+        {32, 58, 30, 42, 28, 28},
+        {32, 58, 34, 44, 38, 30},
+        {32, 58, 38, 48, 46, 38},
+        {32, 58, 40, 52, 48, 46},
+        {26, 48, 22, 40, 14, 36},
+        {38, 48, 42, 40, 46, 28},
+    };
+
+    for (const auto& b : branches) {
+        for (int i = 0; i <= 20; ++i) {
+            float t = static_cast<float>(i) / 20.0f;
+            float omt = 1.0f - t;
+            float px = omt * omt * b.x0 + 2.0f * omt * t * b.x1 + t * t * b.x2;
+            float py = omt * omt * b.y0 + 2.0f * omt * t * b.y1 + t * t * b.y2;
+            RGBA8 col = (t > 0.6f) ? woodLight : ((t > 0.3f) ? woodMid : woodDark);
+            c.setPixel(static_cast<int>(px), static_cast<int>(py), col, 0.75f - t * 0.3f);
+            if (t < 0.4f) {
+                c.setPixel(static_cast<int>(px) + 1, static_cast<int>(py), woodDark, 0.70f);
+            }
+        }
+    }
+    finalizeSpriteBevelAndOutline(c, RGBA8{32, 22, 16, 255});
+}
+
+void generateSnowPineSprite(PixelCanvas& c, uint32_t seed) {
+    generatePineTreeSprite(c, seed);
+
+    RGBA8 snowCrust{250, 253, 255, 255};
+    RGBA8 snowShadow{214, 228, 246, 255};
+
+    struct Tier { int cy; int halfW; int h; };
+    const Tier tiers[4] = { {42, 23, 14}, {31, 19, 13}, {21, 14, 12}, {12, 9, 10} };
+
+    for (int t = 0; t < 4; ++t) {
+        const auto& tr = tiers[t];
+        for (int dy = -tr.h; dy <= -tr.h + 5; ++dy) {
+            float progress = static_cast<float>(dy + tr.h) / 5.0f;
+            int span = static_cast<int>(tr.halfW * (progress * 0.6f + 0.4f));
+            for (int dx = -span; dx <= span; ++dx) {
+                int px = 32 + dx;
+                int py = tr.cy + dy;
+                if (c.getPixelWrapped(px, py).a == 0) continue;
+
+                float n = PixelCanvas::hash2D(px, py, seed + t * 47u);
+                if (std::abs(dx) > span - 1 && n < 0.3f) continue;
+
+                RGBA8 col = (dy == -tr.h + 5 || (dx > span / 2)) ? snowShadow : snowCrust;
+                c.setPixel(px, py, col, 0.95f);
+            }
+        }
+    }
+    finalizeSpriteBevelAndOutline(c, RGBA8{18, 30, 42, 255});
 }
 
 } // namespace
@@ -737,11 +1919,11 @@ ProceduralAtlasData ProceduralAtlasGenerator::buildAllLayers() {
     // 1. World Terrain & Architectural Material Layers (0..13)
     {
         PixelCanvas c;
-        generateGrassTile(c, {48, 88, 44, 255}, {72, 122, 54, 255}, {106, 156, 68, 255}, {244, 206, 78, 255}, 101u, true);
-        writeLayer(TexLayer::GrassMeadow, c, 2.6f, true);
+        generateGrassTile(c, {30, 48, 24, 255}, {52, 78, 36, 255}, {82, 118, 50, 255}, {206, 192, 84, 255}, 101u, true);
+        writeLayer(TexLayer::GrassMeadow, c, 2.8f, true);
 
-        generateGrassTile(c, {62, 82, 42, 255}, {92, 114, 52, 255}, {128, 144, 68, 255}, {228, 124, 152, 255}, 202u, false);
-        writeLayer(TexLayer::GrassHighland, c, 2.6f, true);
+        generateGrassTile(c, {40, 60, 28, 255}, {66, 92, 40, 255}, {96, 130, 56, 255}, {198, 176, 76, 255}, 202u, false);
+        writeLayer(TexLayer::GrassHighland, c, 2.8f, true);
 
         generateCliffStoneTile(c, 303u);
         writeLayer(TexLayer::CliffStone, c, 4.2f, true);
@@ -776,39 +1958,33 @@ ProceduralAtlasData ProceduralAtlasGenerator::buildAllLayers() {
         generateWaterSurfaceTile(c, 1212u);
         writeLayer(TexLayer::WaterSurface, c, 2.8f, true);
 
-        generateDirtPathTile(c, 1313u);
-        writeLayer(TexLayer::SandShore, c, 2.0f, true);
+        generateSandShoreTile(c, 1313u);
+        writeLayer(TexLayer::SandShore, c, 2.6f, true);
     }
 
-    // 2. 2.5D Shadow-Casting & Normal-Mapped Billboard Sprite Layers (14..23)
+    // 2. 2.5D Billboard Sprites & Custom Props (14..23)
     {
         PixelCanvas c;
-        // Hero: Crimson traveler cloak, navy tunic, golden blond hair, broadsword & crest shield
         generateCharacterSprite(c, {186, 44, 48, 255}, {46, 72, 118, 255}, {232, 192, 96, 255}, {218, 174, 72, 255}, true, false);
         writeLayer(TexLayer::SpriteHero, c, 3.2f, false);
 
-        // Villager: Forest green shawl, warm linen tunic, chestnut hair
         generateCharacterSprite(c, {58, 112, 68, 255}, {216, 198, 168, 255}, {114, 68, 44, 255}, {142, 94, 54, 255}, false, false);
         writeLayer(TexLayer::SpriteVillager, c, 3.2f, false);
 
-        // Merchant: Royal purple mantle, ochre coat, dark beard/hair, heavy trade backpack
         generateCharacterSprite(c, {118, 56, 132, 255}, {196, 138, 64, 255}, {62, 48, 44, 255}, {228, 184, 78, 255}, false, true);
         writeLayer(TexLayer::SpriteMerchant, c, 3.2f, false);
 
-        // Town Guard: Cobalt surcoat, steel armor tunic, silver helm/hair, sword & shield
         generateCharacterSprite(c, {44, 84, 156, 255}, {158, 168, 182, 255}, {188, 196, 208, 255}, {214, 172, 74, 255}, true, false);
         writeLayer(TexLayer::SpriteGuard, c, 3.2f, false);
 
-        // Monsters
         generateSlimeMonsterSprite(c);
         writeLayer(TexLayer::SpriteSlime, c, 3.5f, false);
 
         generateWolfMonsterSprite(c);
         writeLayer(TexLayer::SpriteWolf, c, 3.4f, false);
 
-        // Swaying Flora & Torch Sprites
-        generatePineTreeSprite(c, 1414u);
-        writeLayer(TexLayer::SpritePineTree, c, 3.2f, false);
+        generatePineFoliageTile(c, 1414u);
+        writeLayer(TexLayer::PineFoliage, c, 2.5f, true);
 
         generateOakTreeSprite(c, 1515u);
         writeLayer(TexLayer::SpriteOakTree, c, 3.2f, false);
@@ -818,6 +1994,90 @@ ProceduralAtlasData ProceduralAtlasGenerator::buildAllLayers() {
 
         generateTorchFlameSprite(c);
         writeLayer(TexLayer::SpriteTorchFlame, c, 2.8f, false);
+    }
+
+    // 3. Coastal, Tropical Palm & Expanded Party Layers (24..31)
+    {
+        PixelCanvas c;
+        generatePalmFrondsTile(c, 1717u);
+        writeLayer(TexLayer::PalmFronds, c, 3.2f, true);
+
+        generatePalmBarkTile(c, 1818u);
+        writeLayer(TexLayer::PalmBark, c, 3.5f, true);
+
+        generateCoastalCliffStoneTile(c, 1919u);
+        writeLayer(TexLayer::CoastalCliff, c, 4.4f, true);
+
+        generateCoastalScreeTile(c, 2020u);
+        writeLayer(TexLayer::CoastalScree, c, 3.6f, true);
+
+        generatePalmTreeSprite(c, 2121u);
+        writeLayer(TexLayer::SpritePalmTree, c, 3.2f, false);
+
+        generateClericSprite(c);
+        writeLayer(TexLayer::SpriteCleric, c, 3.2f, false);
+
+        generateScholarSprite(c);
+        writeLayer(TexLayer::SpriteScholar, c, 3.2f, false);
+
+        generateDancerSprite(c);
+        writeLayer(TexLayer::SpriteDancer, c, 3.2f, false);
+    }
+
+    // 4. Lush HD-2D Meadow Grass & Wildflower Flora (32..37)
+    {
+        PixelCanvas c;
+        generateGrassTuftSprite(c, 2222u);
+        writeLayer(TexLayer::SpriteGrassTuft, c, 3.0f, false);
+
+        generateTallGrassSprite(c, 2323u);
+        writeLayer(TexLayer::SpriteTallGrass, c, 3.0f, false);
+
+        generateWildflowerBouquetSprite(c, 0, 2424u);
+        writeLayer(TexLayer::SpriteWildflowerRed, c, 3.2f, false);
+
+        generateWildflowerBouquetSprite(c, 1, 2525u);
+        writeLayer(TexLayer::SpriteWildflowerBlue, c, 3.2f, false);
+
+        generateWildflowerBouquetSprite(c, 2, 2626u);
+        writeLayer(TexLayer::SpriteWildflowerYellow, c, 3.2f, false);
+
+        generateCloverPatchSprite(c, 2727u);
+        writeLayer(TexLayer::SpriteCloverPatch, c, 2.8f, false);
+    }
+
+    // 5. Biome Material & Flora Billboard Layers (38..44)
+    {
+        PixelCanvas c;
+        generateSnowFrostTile(c, 2828u);
+        writeLayer(TexLayer::SnowFrost, c, 3.2f, true);
+
+        generateDesertDuneTile(c, 2929u);
+        writeLayer(TexLayer::DesertDune, c, 3.0f, true);
+
+        generateSwampBogTile(c, 3030u);
+        writeLayer(TexLayer::SwampBog, c, 2.8f, true);
+
+        generateScorchedAshTile(c, 3131u);
+        writeLayer(TexLayer::ScorchedAsh, c, 3.5f, true);
+
+        generateCactusSprite(c, 3232u);
+        writeLayer(TexLayer::SpriteCactus, c, 3.0f, false);
+
+        generateDeadShrubSprite(c, 3333u);
+        writeLayer(TexLayer::SpriteDeadShrub, c, 2.8f, false);
+
+        generateSnowPineSprite(c, 3434u);
+        writeLayer(TexLayer::SpriteSnowPine, c, 3.2f, false);
+
+        generateOakFoliageTile(c, 3535u);
+        writeLayer(TexLayer::OakFoliage, c, 2.8f, true);
+
+        generateSnowPineFoliageTile(c, 3636u);
+        writeLayer(TexLayer::SnowPineFoliage, c, 2.6f, true);
+
+        generateAutumnFoliageTile(c, 3737u);
+        writeLayer(TexLayer::AutumnFoliage, c, 2.8f, true);
     }
 
     const auto t1 = std::chrono::high_resolution_clock::now();

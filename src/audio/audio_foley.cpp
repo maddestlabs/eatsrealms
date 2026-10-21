@@ -113,7 +113,16 @@ void AudioFoleyEngine::triggerMaterialImpact(uint16_t layerId, float intensity) 
         case TexLayer::GrassHighland:
         case TexLayer::SpritePineTree:
         case TexLayer::SpriteOakTree:
+        case TexLayer::OakFoliage:
+        case TexLayer::SnowPineFoliage:
+        case TexLayer::AutumnFoliage:
         case TexLayer::SpriteWildflower:
+        case TexLayer::SpriteGrassTuft:
+        case TexLayer::SpriteTallGrass:
+        case TexLayer::SpriteWildflowerRed:
+        case TexLayer::SpriteWildflowerBlue:
+        case TexLayer::SpriteWildflowerYellow:
+        case TexLayer::SpriteCloverPatch:
             v.freq1 = 315.0f;
             v.freq2 = 650.0f;
             v.decay = 0.9991f;

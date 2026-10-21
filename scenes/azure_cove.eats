@@ -1,0 +1,11 @@
+# Azure Cove — HD-2D Coastal Island & Rocky Sea Stacks Scene Recipe
+# Live hot-reloaded by Eatsrealms whenever this file is saved!
+# Features:
+# - Gerstner ocean waves with diamond specular sun glints and surging shoreline surf
+# - Stratified limestone sea stacks, rocky scree overlook, and wooden suspension bridge
+# - 3D palm trees with arched fronds and stone planter drum plinth
+# - Traveler party (Warrior, Cleric, Scholar, Dancer, Merchant, Guard, Villager)
+# - Interactive RPG treasure chest overlooking the turquoise cove
+
+realm.build_coastal_cove(seed=777)
+realm.set_camera(-3.2, 19.5, -27.5, -0.8, 3.8, 2.5, 27.5, 33.5, 15.5, 14.0)
